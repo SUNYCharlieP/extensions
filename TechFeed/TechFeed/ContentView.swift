@@ -64,6 +64,15 @@ struct ContentView: View {
         return parser.items.filter { $0.category == selectedCategory }
     }
 
+    /// Split items into those with images (visual) and those without (text-only).
+    private var visualItems: [FeedItem] {
+        filteredItems.filter { $0.imageURL != nil }
+    }
+
+    private var textItems: [FeedItem] {
+        filteredItems.filter { $0.imageURL == nil }
+    }
+
     private var feedContent: some View {
         ScrollView {
             VStack(spacing: 0) {
@@ -74,8 +83,8 @@ struct ContentView: View {
                 categoryBar
                     .padding(.top, 4)
 
-                // Hero card
-                if let hero = filteredItems.first {
+                // Hero — best image story
+                if let hero = visualItems.first {
                     HeroCardView(item: hero)
                         .onTapGesture {
                             PreferenceEngine.shared.recordTap(on: hero)
@@ -85,13 +94,47 @@ struct ContentView: View {
                         .padding(.top, 16)
                 }
 
-                // Remaining articles
-                let remaining = Array(filteredItems.dropFirst())
+                // Featured grid — next image-rich stories in 2-column layout
+                let featured = Array(visualItems.dropFirst().prefix(4))
+                if !featured.isEmpty {
+                    featuredGrid(featured)
+                        .padding(.top, 20)
+                }
 
-                if selectedCategory == "Top Picks" && !remaining.isEmpty {
-                    sectionedFeed(remaining)
-                } else {
-                    flatFeed(remaining)
+                // More stories with images
+                let moreVisual = Array(visualItems.dropFirst(5))
+                if !moreVisual.isEmpty {
+                    feedSection(title: "More Stories") {
+                        VStack(spacing: 10) {
+                            ForEach(moreVisual) { item in
+                                CompactRowView(item: item)
+                                    .onTapGesture {
+                                        PreferenceEngine.shared.recordTap(on: item)
+                                        selectedItem = item
+                                    }
+                            }
+                        }
+                        .padding(.horizontal)
+                    }
+                    .padding(.top, 20)
+                }
+
+                // Headlines — clean text-only list
+                if !textItems.isEmpty {
+                    feedSection(title: "Headlines") {
+                        VStack(spacing: 1) {
+                            ForEach(textItems) { item in
+                                HeadlineRowView(item: item)
+                                    .onTapGesture {
+                                        PreferenceEngine.shared.recordTap(on: item)
+                                        selectedItem = item
+                                    }
+                            }
+                        }
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                        .padding(.horizontal)
+                    }
+                    .padding(.top, 20)
                 }
             }
             .padding(.bottom, 20)
@@ -99,6 +142,22 @@ struct ContentView: View {
         .refreshable {
             await parser.fetchAllFeedsAsync()
         }
+    }
+
+    // MARK: - Featured Grid (2-column)
+
+    private func featuredGrid(_ items: [FeedItem]) -> some View {
+        let columns = [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)]
+        return LazyVGrid(columns: columns, spacing: 10) {
+            ForEach(items) { item in
+                FeaturedCardView(item: item)
+                    .onTapGesture {
+                        PreferenceEngine.shared.recordTap(on: item)
+                        selectedItem = item
+                    }
+            }
+        }
+        .padding(.horizontal)
     }
 
     // MARK: - Category Bar
@@ -129,72 +188,6 @@ struct ContentView: View {
             .padding(.horizontal)
             .padding(.vertical, 8)
         }
-    }
-
-    // MARK: - Sectioned Feed (For You)
-
-    private func sectionedFeed(_ items: [FeedItem]) -> some View {
-        let trending = Array(items.prefix(5))
-        let rest = Array(items.dropFirst(5))
-
-        let grouped = Dictionary(grouping: rest) { $0.category }
-        let orderedCategories = ["Apple", "General Tech", "Hacker News", "Security", "Science"]
-            .filter { grouped[$0] != nil }
-
-        return VStack(spacing: 24) {
-            // Trending horizontal scroll
-            if !trending.isEmpty {
-                feedSection(title: "Trending") {
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 12) {
-                            ForEach(trending) { item in
-                                TrendingCardView(item: item)
-                                    .onTapGesture {
-                                        PreferenceEngine.shared.recordTap(on: item)
-                                        selectedItem = item
-                                    }
-                            }
-                        }
-                        .padding(.horizontal)
-                    }
-                }
-            }
-
-            // Category groups
-            ForEach(orderedCategories, id: \.self) { cat in
-                if let catItems = grouped[cat], !catItems.isEmpty {
-                    feedSection(title: cat) {
-                        VStack(spacing: 10) {
-                            ForEach(catItems.prefix(4)) { item in
-                                CompactRowView(item: item)
-                                    .onTapGesture {
-                                        PreferenceEngine.shared.recordTap(on: item)
-                                        selectedItem = item
-                                    }
-                            }
-                        }
-                        .padding(.horizontal)
-                    }
-                }
-            }
-        }
-        .padding(.top, 20)
-    }
-
-    // MARK: - Flat Feed (Filtered)
-
-    private func flatFeed(_ items: [FeedItem]) -> some View {
-        LazyVStack(spacing: 10) {
-            ForEach(items) { item in
-                CompactRowView(item: item)
-                    .onTapGesture {
-                        PreferenceEngine.shared.recordTap(on: item)
-                        selectedItem = item
-                    }
-            }
-        }
-        .padding(.horizontal)
-        .padding(.top, 16)
     }
 
     // MARK: - Section Header
@@ -506,8 +499,16 @@ struct HeroCardView: View {
     }
 
     private var heroPlaceholder: some View {
-        SourceInitialView(source: item.source, size: .hero)
-            .frame(height: 200)
+        ZStack {
+            LinearGradient(
+                colors: [.arcaOrange.opacity(0.15), .arcaRed.opacity(0.1)],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+            ProgressView()
+                .tint(.arcaOrange)
+        }
+        .frame(height: 200)
     }
 
     private static let relativeFormatter: RelativeDateTimeFormatter = {
@@ -517,58 +518,115 @@ struct HeroCardView: View {
     }()
 }
 
-// MARK: - Trending Card (Horizontal Scroll)
+// MARK: - Featured Card (2-column grid)
 
-struct TrendingCardView: View {
+struct FeaturedCardView: View {
     let item: FeedItem
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 0) {
             AsyncImage(url: item.imageURL) { phase in
                 switch phase {
                 case .success(let image):
                     image
                         .resizable()
                         .aspectRatio(contentMode: .fill)
-                        .frame(width: 200, height: 120)
+                        .frame(height: 110)
                         .clipped()
-                case .failure, .empty:
-                    trendingPlaceholder
-                @unknown default:
-                    trendingPlaceholder
+                default:
+                    Color(.tertiarySystemGroupedBackground)
+                        .frame(height: 110)
                 }
             }
-            .frame(width: 200, height: 120)
-            .clipShape(RoundedRectangle(cornerRadius: 10))
+            .frame(height: 110)
+            .frame(maxWidth: .infinity)
 
             VStack(alignment: .leading, spacing: 4) {
                 Text(item.title)
                     .font(.caption.weight(.semibold))
                     .foregroundColor(.primary)
-                    .lineLimit(2)
+                    .lineLimit(3)
 
-                HStack {
+                HStack(spacing: 3) {
                     Text(item.source)
                         .font(.caption2.weight(.medium))
                         .foregroundColor(.arcaOrange)
                     Text("·")
+                        .font(.caption2)
                         .foregroundColor(.secondary)
                     Text(item.pubDate, formatter: Self.relativeFormatter)
                         .font(.caption2)
                         .foregroundColor(.secondary)
                 }
             }
-            .padding(.horizontal, 4)
+            .padding(10)
         }
-        .frame(width: 200)
-        .padding(.bottom, 8)
         .background(Color(.secondarySystemGroupedBackground))
         .clipShape(RoundedRectangle(cornerRadius: 12))
     }
 
-    private var trendingPlaceholder: some View {
-        SourceInitialView(source: item.source, size: .trending)
-            .frame(width: 200, height: 120)
+    private static let relativeFormatter: RelativeDateTimeFormatter = {
+        let f = RelativeDateTimeFormatter()
+        f.unitsStyle = .abbreviated
+        return f
+    }()
+}
+
+// MARK: - Headline Row (text-only, no thumbnail)
+
+struct HeadlineRowView: View {
+    let item: FeedItem
+    @State private var isLiked = false
+
+    var body: some View {
+        HStack(spacing: 12) {
+            // Source color bar
+            RoundedRectangle(cornerRadius: 2)
+                .fill(Color.arcaOrange)
+                .frame(width: 3, height: 36)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(item.title)
+                    .font(.subheadline.weight(.medium))
+                    .foregroundColor(.primary)
+                    .lineLimit(2)
+
+                HStack(spacing: 4) {
+                    Text(item.source)
+                        .font(.caption2.weight(.medium))
+                        .foregroundColor(.arcaOrange)
+                    Text("·")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                    Text(item.pubDate, formatter: Self.relativeFormatter)
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
+            }
+
+            Spacer(minLength: 0)
+
+            Button {
+                withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) {
+                    isLiked.toggle()
+                }
+                if isLiked {
+                    PreferenceEngine.shared.recordLike(on: item)
+                }
+            } label: {
+                Image(systemName: isLiked ? "heart.fill" : "heart")
+                    .font(.caption)
+                    .foregroundColor(isLiked ? .arcaRed : .secondary.opacity(0.4))
+                    .scaleEffect(isLiked ? 1.15 : 1.0)
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .background(Color(.secondarySystemGroupedBackground))
+        .onAppear {
+            isLiked = PreferenceEngine.shared.isLiked(item)
+        }
     }
 
     private static let relativeFormatter: RelativeDateTimeFormatter = {
@@ -595,17 +653,13 @@ struct CompactRowView: View {
                         .frame(width: 80, height: 64)
                         .clipped()
                 case .failure:
-                    compactPlaceholder
+                    Color(.tertiarySystemGroupedBackground)
                 case .empty:
-                    if item.imageURL != nil {
-                        ProgressView()
-                            .tint(.arcaOrange)
-                            .frame(width: 80, height: 64)
-                    } else {
-                        compactPlaceholder
-                    }
+                    ProgressView()
+                        .tint(.arcaOrange)
+                        .frame(width: 80, height: 64)
                 @unknown default:
-                    compactPlaceholder
+                    Color(.tertiarySystemGroupedBackground)
                 }
             }
             .frame(width: 80, height: 64)
@@ -662,59 +716,4 @@ struct CompactRowView: View {
         return f
     }()
 
-    private var compactPlaceholder: some View {
-        SourceInitialView(source: item.source, size: .compact)
-            .frame(width: 80, height: 64)
-    }
-}
-
-// MARK: - Source Initial Placeholder
-
-enum PlaceholderSize {
-    case compact, trending, hero
-}
-
-struct SourceInitialView: View {
-    let source: String
-    let size: PlaceholderSize
-
-    private var initial: String {
-        String(source.prefix(1)).uppercased()
-    }
-
-    private var colors: (Color, Color) {
-        switch source {
-        case "Hacker News":     return (Color(red: 1.0, green: 0.4, blue: 0.0), Color(red: 0.85, green: 0.25, blue: 0.0))
-        case "Krebs on Security": return (Color(red: 0.2, green: 0.5, blue: 0.8), Color(red: 0.1, green: 0.3, blue: 0.6))
-        case "9to5Mac":         return (Color(red: 0.2, green: 0.2, blue: 0.2), Color(red: 0.35, green: 0.35, blue: 0.35))
-        case "MacRumors":       return (Color(red: 0.0, green: 0.48, blue: 1.0), Color(red: 0.0, green: 0.35, blue: 0.8))
-        case "The Verge":       return (Color(red: 0.5, green: 0.2, blue: 0.8), Color(red: 0.35, green: 0.1, blue: 0.6))
-        case "Ars Technica":    return (Color(red: 0.85, green: 0.25, blue: 0.0), Color(red: 0.65, green: 0.15, blue: 0.0))
-        case "TechCrunch":      return (Color(red: 0.15, green: 0.7, blue: 0.35), Color(red: 0.1, green: 0.5, blue: 0.25))
-        case "MIT Technology Review": return (Color(red: 0.8, green: 0.0, blue: 0.2), Color(red: 0.6, green: 0.0, blue: 0.15))
-        default:                return (.arcaOrange, .arcaRed)
-        }
-    }
-
-    private var fontSize: Font {
-        switch size {
-        case .compact: return .title2.weight(.heavy)
-        case .trending: return .largeTitle.weight(.heavy)
-        case .hero: return .system(size: 56, weight: .heavy)
-        }
-    }
-
-    var body: some View {
-        ZStack {
-            LinearGradient(
-                colors: [colors.0, colors.1],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-
-            Text(initial)
-                .font(fontSize)
-                .foregroundColor(.white.opacity(0.9))
-        }
-    }
 }
