@@ -39,7 +39,8 @@ class FeedParser: ObservableObject {
 
         group.notify(queue: .main) { [weak self] in
             guard let self = self else { return }
-            let sorted = self.preferences.scoreItems(collectedItems)
+            let filtered = collectedItems.filter { !Self.isPromo($0) }
+            let sorted = self.preferences.scoreItems(filtered)
             self.items = sorted
             self.isLoading = false
             self.fetchMissingImages()
@@ -72,6 +73,22 @@ class FeedParser: ObservableObject {
                     self.items[idx].imageURL = imageURL
                 }
             }.resume()
+        }
+    }
+
+    private static let promoPatterns: [String] = [
+        "promo code", "coupon", "% off", "$ off", "discount code",
+        "deal alert", "best deals", "save up to", "sale:", "days left to save",
+        "affiliate", "sponsored", "shop now", "buy now", "limited time offer",
+        "price drop", "lowest price", "black friday", "cyber monday",
+        "gift guide", "buying guide",
+    ]
+
+    private static func isPromo(_ item: FeedItem) -> Bool {
+        let title = item.title.lowercased()
+        let desc = item.itemDescription.lowercased()
+        return promoPatterns.contains { pattern in
+            title.contains(pattern) || desc.contains(pattern)
         }
     }
 

@@ -1,9 +1,8 @@
 import SwiftUI
-import SafariServices
 
 struct ContentView: View {
     @StateObject private var parser = FeedParser()
-    @State private var selectedURL: URL?
+    @State private var selectedItem: FeedItem?
     @State private var hasAppeared = false
 
     var body: some View {
@@ -21,7 +20,7 @@ struct ContentView: View {
                                 FeedRowView(item: item)
                                     .onTapGesture {
                                         PreferenceEngine.shared.recordTap(on: item)
-                                        selectedURL = item.url
+                                        selectedItem = item
                                     }
                             }
                         }
@@ -44,9 +43,8 @@ struct ContentView: View {
                     .disabled(parser.isLoading)
                 }
             }
-            .sheet(item: $selectedURL) { url in
-                SafariView(url: url)
-                    .ignoresSafeArea()
+            .fullScreenCover(item: $selectedItem) { item in
+                ArticleReaderView(item: item)
             }
         }
         .onAppear {
@@ -55,26 +53,6 @@ struct ContentView: View {
             parser.fetchAllFeeds()
         }
     }
-}
-
-// MARK: - Safari View
-
-struct SafariView: UIViewControllerRepresentable {
-    let url: URL
-
-    func makeUIViewController(context: Context) -> SFSafariViewController {
-        let config = SFSafariViewController.Configuration()
-        config.entersReaderIfAvailable = false
-        let vc = SFSafariViewController(url: url, configuration: config)
-        vc.preferredControlTintColor = .systemBlue
-        return vc
-    }
-
-    func updateUIViewController(_ uiViewController: SFSafariViewController, context: Context) {}
-}
-
-extension URL: @retroactive Identifiable {
-    public var id: String { absoluteString }
 }
 
 // MARK: - Feed Row
