@@ -24,9 +24,11 @@ struct ArticleReaderView: View {
                         HStack(spacing: 16) {
                             ShareLink(item: item.url) {
                                 Image(systemName: "square.and.arrow.up")
+                                    .foregroundColor(.arcaOrange)
                             }
                             Link(destination: item.url) {
                                 Image(systemName: "safari")
+                                    .foregroundColor(.arcaOrange)
                             }
                         }
                     }
@@ -79,7 +81,7 @@ struct ReaderWebView: UIViewRepresentable {
                     background: #1c1c1e !important;
                 }
                 img { opacity: 0.9; }
-                a { color: #58a6ff !important; }
+                a { color: #FF854F !important; }
             }
             img {
                 max-width: 100% !important;
@@ -95,7 +97,7 @@ struct ReaderWebView: UIViewRepresentable {
             h1 { font-size: 28px !important; }
             h2 { font-size: 22px !important; }
             p { margin: 14px 0 !important; }
-            a { color: #007aff !important; }
+            a { color: #FF7A3D !important; }
             figure { margin: 16px 0 !important; padding: 0 !important; }
             figcaption {
                 font-size: 14px !important;
@@ -113,7 +115,7 @@ struct ReaderWebView: UIViewRepresentable {
                 pre, code { background: #2c2c2e !important; }
             }
             blockquote {
-                border-left: 3px solid #007aff !important;
+                border-left: 3px solid #FF7A3D !important;
                 padding-left: 16px !important;
                 margin: 16px 0 !important;
                 color: #6e6e73 !important;

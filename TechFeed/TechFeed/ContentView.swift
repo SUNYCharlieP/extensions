@@ -12,7 +12,13 @@ struct ContentView: View {
                     .ignoresSafeArea()
 
                 if parser.isLoading && parser.items.isEmpty {
-                    ProgressView("Loading feeds...")
+                    VStack(spacing: 16) {
+                        ProgressView()
+                            .tint(Color.arcaOrange)
+                        Text("Loading feeds...")
+                            .font(.subheadline)
+                            .foregroundColor(.secondary)
+                    }
                 } else {
                     ScrollView {
                         LazyVStack(spacing: 12) {
@@ -31,7 +37,7 @@ struct ContentView: View {
                     }
                 }
             }
-            .navigationTitle("Tech Feed")
+            .navigationTitle("Arca")
             .navigationBarTitleDisplayMode(.large)
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
@@ -39,6 +45,7 @@ struct ContentView: View {
                         parser.fetchAllFeeds()
                     } label: {
                         Image(systemName: "arrow.clockwise")
+                            .foregroundColor(.arcaOrange)
                     }
                     .disabled(parser.isLoading)
                 }
@@ -47,11 +54,34 @@ struct ContentView: View {
                 ArticleReaderView(item: item)
             }
         }
+        .tint(.arcaOrange)
         .onAppear {
             guard !hasAppeared else { return }
             hasAppeared = true
             parser.fetchAllFeeds()
         }
+    }
+}
+
+// MARK: - Brand Colors
+
+extension Color {
+    static let arcaOrange = Color(red: 1.0, green: 0.478, blue: 0.239)
+    static let arcaRed = Color(red: 1.0, green: 0.176, blue: 0.333)
+    static let arcaGradient = LinearGradient(
+        colors: [arcaOrange, arcaRed],
+        startPoint: .topLeading,
+        endPoint: .bottomTrailing
+    )
+}
+
+extension ShapeStyle where Self == LinearGradient {
+    static var arcaGradient: LinearGradient {
+        LinearGradient(
+            colors: [.arcaOrange, .arcaRed],
+            startPoint: .topLeading,
+            endPoint: .bottomTrailing
+        )
     }
 }
 
@@ -75,6 +105,7 @@ struct FeedRowView: View {
                 case .empty:
                     if item.imageURL != nil {
                         ProgressView()
+                            .tint(.arcaOrange)
                             .frame(width: 90, height: 70)
                     } else {
                         thumbnailPlaceholder
@@ -103,8 +134,8 @@ struct FeedRowView: View {
 
                 HStack {
                     Text(item.source)
-                        .font(.caption2)
-                        .foregroundColor(.blue)
+                        .font(.caption2.weight(.medium))
+                        .foregroundColor(.arcaOrange)
                     Spacer()
                     Text(item.pubDate, formatter: Self.relativeFormatter)
                         .font(.caption2)
@@ -129,7 +160,7 @@ struct FeedRowView: View {
             Color(.tertiarySystemGroupedBackground)
             Image(systemName: "newspaper.fill")
                 .font(.title2)
-                .foregroundColor(.secondary)
+                .foregroundStyle(.arcaGradient)
         }
         .frame(width: 90, height: 70)
     }
