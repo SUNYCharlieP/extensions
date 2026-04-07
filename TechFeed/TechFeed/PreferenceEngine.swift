@@ -66,6 +66,12 @@ class PreferenceEngine {
         cachedLikedURLs.contains(item.url.absoluteString)
     }
 
+    /// Returns 0–1 affinity for a source based on tap history. Used for dedup tie-breaking.
+    func sourceAffinity(_ source: String) -> Double {
+        guard let max = cachedSources.values.max(), max > 0 else { return 0 }
+        return Double(cachedSources[source] ?? 0) / Double(max)
+    }
+
     private func persistAsync() {
         let sources = cachedSources
         let keywords = cachedKeywords

@@ -40,8 +40,9 @@ class FeedParser: ObservableObject {
         group.notify(queue: .main) { [weak self] in
             guard let self = self else { return }
             let filtered = collectedItems.filter { !Self.isPromo($0) }
-            let sorted = self.preferences.scoreItems(filtered)
-            self.items = sorted
+            let deduped = Self.deduplicate(filtered, preferences: self.preferences)
+            let sorted = self.preferences.scoreItems(deduped)
+            self.items = Self.promoteHero(sorted)
             self.isLoading = false
             self.fetchMissingImages()
         }
@@ -81,8 +82,9 @@ class FeedParser: ObservableObject {
                     return
                 }
                 let filtered = collectedItems.filter { !Self.isPromo($0) }
-                let sorted = self.preferences.scoreItems(filtered)
-                self.items = sorted
+                let deduped = Self.deduplicate(filtered, preferences: self.preferences)
+                let sorted = self.preferences.scoreItems(deduped)
+                self.items = Self.promoteHero(sorted)
                 self.isLoading = false
                 self.fetchMissingImages()
                 continuation.resume()
@@ -113,6 +115,92 @@ class FeedParser: ObservableObject {
                 }
             }.resume()
         }
+    }
+
+    // MARK: - Deduplication
+
+    private static func deduplicate(_ items: [FeedItem], preferences: PreferenceEngine) -> [FeedItem] {
+        guard !items.isEmpty else { return items }
+
+        var result: [FeedItem] = []
+        var usedIndices = Set<Int>()
+
+        // Extract keyword sets once for each item
+        let keywordSets: [Set<String>] = items.map { item in
+            let words = item.title.lowercased()
+                .components(separatedBy: CharacterSet.alphanumerics.inverted)
+                .filter { $0.count > 2 }
+            return Set(words)
+        }
+
+        for i in 0..<items.count {
+            guard !usedIndices.contains(i) else { continue }
+
+            var group = [i]
+            let wordsA = keywordSets[i]
+            guard wordsA.count >= 2 else {
+                result.append(items[i])
+                usedIndices.insert(i)
+                continue
+            }
+
+            // Find duplicates of this article
+            for j in (i + 1)..<items.count {
+                guard !usedIndices.contains(j) else { continue }
+                let wordsB = keywordSets[j]
+                guard wordsB.count >= 2 else { continue }
+
+                let intersection = wordsA.intersection(wordsB).count
+                let union = wordsA.union(wordsB).count
+                let similarity = Double(intersection) / Double(union)
+
+                if similarity > 0.5 {
+                    group.append(j)
+                    usedIndices.insert(j)
+                }
+            }
+
+            // Pick the best from the group: prefer user's preferred source, then image, then newest
+            let best = group.max { a, b in
+                let itemA = items[a]
+                let itemB = items[b]
+                let scoreA = preferences.sourceAffinity(itemA.source) + (itemA.imageURL != nil ? 0.5 : 0)
+                let scoreB = preferences.sourceAffinity(itemB.source) + (itemB.imageURL != nil ? 0.5 : 0)
+                if abs(scoreA - scoreB) > 0.01 { return scoreA < scoreB }
+                return itemA.pubDate < itemB.pubDate
+            }!
+
+            result.append(items[best])
+            usedIndices.insert(best)
+        }
+
+        return result
+    }
+
+    // MARK: - Hero Promotion
+
+    /// Picks the best hero candidate and moves it to index 0.
+    /// Hero must be: < 6 hours old, have an image, and rotates on a 2-hour cycle.
+    private static func promoteHero(_ items: [FeedItem]) -> [FeedItem] {
+        guard items.count > 1 else { return items }
+
+        let sixHoursAgo = Date().addingTimeInterval(-6 * 3600)
+        let candidates = items.enumerated().filter { (_, item) in
+            item.imageURL != nil && item.pubDate > sixHoursAgo
+        }
+
+        guard !candidates.isEmpty else { return items }
+
+        // Rotate hero every 2 hours using a time-based seed
+        let twoHourSlot = Int(Date().timeIntervalSince1970) / 7200
+        let heroIndex = candidates[twoHourSlot % candidates.count].offset
+
+        guard heroIndex != 0 else { return items }
+
+        var reordered = items
+        let hero = reordered.remove(at: heroIndex)
+        reordered.insert(hero, at: 0)
+        return reordered
     }
 
     private static let promoPatterns: [String] = [
