@@ -47,29 +47,12 @@ struct ContentView: View {
             )
             .ignoresSafeArea(edges: .top)
 
-            VStack(spacing: 0) {
-                // Refresh button row
-                HStack {
-                    Spacer()
-                    Button {
-                        parser.fetchAllFeeds()
-                    } label: {
-                        Image(systemName: "arrow.clockwise")
-                            .font(.body.weight(.semibold))
-                            .foregroundColor(.white.opacity(0.85))
-                    }
-                    .disabled(parser.isLoading)
-                    .padding(.trailing, 16)
-                    .padding(.top, 4)
-                }
-
-                // Logo
-                ArcaLogoView()
-                    .frame(width: 34, height: 46)
-                    .padding(.bottom, 16)
-            }
+            ArcaLogoView()
+                .frame(width: 28, height: 36)
+                .padding(.top, 6)
+                .padding(.bottom, 10)
         }
-        .frame(height: 90)
+        .frame(height: 56)
     }
 
     // MARK: - Feed Content

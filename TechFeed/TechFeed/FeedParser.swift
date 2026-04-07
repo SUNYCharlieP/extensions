@@ -8,8 +8,8 @@ class FeedParser: ObservableObject {
     private let preferences = PreferenceEngine.shared
     private let ogImageSession: URLSession = {
         let config = URLSessionConfiguration.default
-        config.httpMaximumConnectionsPerHost = 4
-        config.timeoutIntervalForResource = 8
+        config.httpMaximumConnectionsPerHost = 6
+        config.timeoutIntervalForResource = 12
         return URLSession(configuration: config)
     }()
 
@@ -100,11 +100,11 @@ class FeedParser: ObservableObject {
             let itemID = item.id
             let articleURL = item.url
             var request = URLRequest(url: articleURL)
-            request.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)", forHTTPHeaderField: "User-Agent")
+            request.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1", forHTTPHeaderField: "User-Agent")
 
             ogImageSession.dataTask(with: request) { [weak self] data, _, _ in
                 guard let data = data,
-                      let html = String(data: data.prefix(50_000), encoding: .utf8),
+                      let html = String(data: data.prefix(100_000), encoding: .utf8),
                       let ogImage = Self.extractOGImage(from: html),
                       let imageURL = URL(string: ogImage) else { return }
 
@@ -240,6 +240,8 @@ class FeedParser: ObservableObject {
         let raw = [
             "property\\s*=\\s*[\"']og:image[\"'][^>]*content\\s*=\\s*[\"']([^\"']+)[\"']",
             "content\\s*=\\s*[\"']([^\"']+)[\"'][^>]*property\\s*=\\s*[\"']og:image[\"']",
+            "name\\s*=\\s*[\"']twitter:image[\"'][^>]*content\\s*=\\s*[\"']([^\"']+)[\"']",
+            "content\\s*=\\s*[\"']([^\"']+)[\"'][^>]*name\\s*=\\s*[\"']twitter:image[\"']",
         ]
         return raw.compactMap { try? NSRegularExpression(pattern: $0, options: .caseInsensitive) }
     }()
