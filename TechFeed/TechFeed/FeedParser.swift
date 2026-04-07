@@ -318,7 +318,7 @@ class FeedParser: ObservableObject {
         "logo", "icon", "avatar", "badge", "emoji", "button", "spacer",
         "pixel", "tracking", "1x1", "blank", "spinner", "loading",
         "gravatar", "favicon", "sprite", "ads", "banner-ad",
-        "data:", ".svg", ".gif",
+        "data:", ".svg", ".gif", "placeholder", "lazy",
     ]
 
     private static func extractContentImage(from html: String, baseURL: URL) -> String? {
