@@ -26,7 +26,7 @@ class FeedParser: ObservableObject {
                 defer { group.leave() }
                 guard let self = self, let data = data, error == nil else { return }
 
-                let delegate = FeedXMLParserDelegate(sourceName: feed.name)
+                let delegate = FeedXMLParserDelegate(sourceName: feed.name, category: feed.category)
                 let parser = XMLParser(data: data)
                 parser.delegate = delegate
                 parser.parse()
@@ -121,6 +121,7 @@ private enum FeedFormat {
 
 private class FeedXMLParserDelegate: NSObject, XMLParserDelegate {
     let sourceName: String
+    let category: String
     var items: [FeedItem] = []
 
     private var feedFormat: FeedFormat = .unknown
@@ -133,8 +134,9 @@ private class FeedXMLParserDelegate: NSObject, XMLParserDelegate {
     private var currentImageURL = ""
     private var currentContentEncoded = ""
 
-    init(sourceName: String) {
+    init(sourceName: String, category: String) {
         self.sourceName = sourceName
+        self.category = category
         super.init()
     }
 
@@ -232,6 +234,7 @@ private class FeedXMLParserDelegate: NSObject, XMLParserDelegate {
                 url: url,
                 imageURL: imageURL,
                 source: sourceName,
+                category: category,
                 pubDate: pubDate
             )
             items.append(item)

@@ -4,13 +4,26 @@ import WebKit
 struct ArticleReaderView: View {
     let item: FeedItem
     @Environment(\.dismiss) private var dismiss
+    @State private var isWebViewLoaded = false
 
     var body: some View {
         NavigationStack {
-            ReaderWebView(url: item.url)
+            ZStack {
+                ReaderWebView(url: item.url, onFinished: {
+                    withAnimation(.easeIn(duration: 0.3)) {
+                        isWebViewLoaded = true
+                    }
+                })
                 .ignoresSafeArea(edges: .bottom)
-                .navigationTitle(item.source)
-                .navigationBarTitleDisplayMode(.inline)
+                .opacity(isWebViewLoaded ? 1 : 0)
+
+                if !isWebViewLoaded {
+                    readerLoadingState
+                        .transition(.opacity)
+                }
+            }
+            .navigationTitle(item.source)
+            .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
                     ToolbarItem(placement: .navigationBarLeading) {
                         Button { dismiss() } label: {
@@ -34,6 +47,48 @@ struct ArticleReaderView: View {
                     }
                 }
         }
+    }
+
+    private var readerLoadingState: some View {
+        VStack(spacing: 20) {
+            // Article preview while loading
+            if let imageURL = item.imageURL {
+                AsyncImage(url: imageURL) { phase in
+                    if case .success(let image) = phase {
+                        image
+                            .resizable()
+                            .aspectRatio(contentMode: .fill)
+                            .frame(height: 200)
+                            .clipped()
+                            .clipShape(RoundedRectangle(cornerRadius: 12))
+                    }
+                }
+                .frame(height: 200)
+                .padding(.horizontal)
+            }
+
+            VStack(spacing: 12) {
+                Text(item.title)
+                    .font(.title3.weight(.bold))
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 24)
+
+                HStack(spacing: 6) {
+                    Text(item.source)
+                        .font(.caption.weight(.semibold))
+                        .foregroundColor(.arcaOrange)
+                }
+            }
+
+            ArcaLoadingView()
+                .scaleEffect(0.7)
+                .padding(.top, 8)
+
+            Spacer()
+        }
+        .padding(.top, 20)
+        .frame(maxWidth: .infinity)
+        .background(Color(.systemBackground))
     }
 }
 
@@ -59,6 +114,7 @@ enum ReaderContentRules {
 
 struct ReaderWebView: UIViewRepresentable {
     let url: URL
+    var onFinished: (() -> Void)?
 
     private static let readerJS = """
     (function() {
@@ -151,6 +207,7 @@ struct ReaderWebView: UIViewRepresentable {
         webView.isOpaque = false
         webView.backgroundColor = .systemBackground
         webView.scrollView.contentInsetAdjustmentBehavior = .always
+        webView.navigationDelegate = context.coordinator
 
         var request = URLRequest(url: url)
         request.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1", forHTTPHeaderField: "User-Agent")
@@ -159,4 +216,23 @@ struct ReaderWebView: UIViewRepresentable {
     }
 
     func updateUIView(_ uiView: WKWebView, context: Context) {}
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onFinished: onFinished)
+    }
+
+    class Coordinator: NSObject, WKNavigationDelegate {
+        let onFinished: (() -> Void)?
+
+        init(onFinished: (() -> Void)?) {
+            self.onFinished = onFinished
+        }
+
+        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            // Small delay to let reader CSS apply
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+                self?.onFinished?()
+            }
+        }
+    }
 }

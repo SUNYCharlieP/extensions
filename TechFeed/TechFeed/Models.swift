@@ -7,6 +7,7 @@ struct FeedItem: Identifiable {
     let url: URL
     var imageURL: URL?
     let source: String
+    let category: String
     let pubDate: Date
     var preferenceScore: Double = 0
 }
