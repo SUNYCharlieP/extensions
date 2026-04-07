@@ -5,10 +5,17 @@ class FeedParser: ObservableObject {
     @Published var isLoading: Bool = false
 
     private let lock = NSLock()
+    private var collectedItems: [FeedItem] = []
 
     func fetchAllFeeds() {
-        isLoading = true
-        var collectedItems: [FeedItem] = []
+        DispatchQueue.main.async {
+            self.isLoading = true
+        }
+
+        lock.lock()
+        collectedItems = []
+        lock.unlock()
+
         let group = DispatchGroup()
 
         for feed in RSSFeed.allFeeds {
@@ -24,16 +31,21 @@ class FeedParser: ObservableObject {
                 parser.parse()
 
                 self.lock.lock()
-                collectedItems.append(contentsOf: delegate.items)
+                self.collectedItems.append(contentsOf: delegate.items)
                 self.lock.unlock()
             }.resume()
         }
 
         group.notify(queue: .main) { [weak self] in
             guard let self = self else { return }
-            self.items = collectedItems.sorted { $0.pubDate > $1.pubDate }
+            self.items = self.collectedItems.sorted { $0.pubDate > $1.pubDate }
+            self.collectedItems = []
             self.isLoading = false
         }
+    }
+
+    func fetchAllFeedsAsync() async {
+        fetchAllFeeds()
     }
 }
 
@@ -130,7 +142,7 @@ private class FeedXMLParserDelegate: NSObject, XMLParserDelegate {
             isInsideItem = false
 
             let title = currentTitle.trimmingCharacters(in: .whitespacesAndNewlines)
-            let description = currentDescription.trimmingCharacters(in: .whitespacesAndNewlines).strippingHTMLTags()
+            let desc = currentDescription.trimmingCharacters(in: .whitespacesAndNewlines).strippingHTMLTags()
             let link = currentLink.trimmingCharacters(in: .whitespacesAndNewlines)
             let imageURLString = currentImageURL.trimmingCharacters(in: .whitespacesAndNewlines)
 
@@ -141,7 +153,7 @@ private class FeedXMLParserDelegate: NSObject, XMLParserDelegate {
 
             let item = FeedItem(
                 title: title,
-                description: description,
+                itemDescription: desc,
                 url: url,
                 imageURL: imageURL,
                 source: sourceName,

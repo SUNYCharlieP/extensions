@@ -21,7 +21,7 @@ struct ContentView: View {
                         .padding(.vertical, 12)
                     }
                     .refreshable {
-                        parser.fetchAllFeeds()
+                        await parser.fetchAllFeedsAsync()
                     }
                 }
             }
@@ -75,8 +75,8 @@ struct FeedRowView: View {
                         .lineLimit(2)
                         .multilineTextAlignment(.leading)
 
-                    if !item.description.isEmpty {
-                        Text(item.description)
+                    if !item.itemDescription.isEmpty {
+                        Text(item.itemDescription)
                             .font(.caption)
                             .foregroundColor(.secondary)
                             .lineLimit(2)
