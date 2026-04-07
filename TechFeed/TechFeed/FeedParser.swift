@@ -103,10 +103,28 @@ class FeedParser: ObservableObject {
             request.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1", forHTTPHeaderField: "User-Agent")
 
             ogImageSession.dataTask(with: request) { [weak self] data, _, _ in
-                guard let data = data,
-                      let html = String(data: data.prefix(100_000), encoding: .utf8),
-                      let ogImage = Self.extractOGImage(from: html),
-                      let imageURL = URL(string: ogImage) else { return }
+                var foundURL: URL?
+
+                if let data = data,
+                   let html = String(data: data.prefix(100_000), encoding: .utf8) {
+                    // Try og:image / twitter:image first
+                    if let ogImage = Self.extractOGImage(from: html),
+                       let url = URL(string: ogImage) {
+                        foundURL = url
+                    }
+                    // Fallback: first large <img> in the page
+                    else if let imgSrc = Self.extractFirstPageImage(from: html, baseURL: articleURL),
+                            let url = URL(string: imgSrc) {
+                        foundURL = url
+                    }
+                }
+
+                // Last resort: site favicon via Google's service
+                if foundURL == nil, let host = articleURL.host {
+                    foundURL = URL(string: "https://www.google.com/s2/favicons?domain=\(host)&sz=128")
+                }
+
+                guard let imageURL = foundURL else { return }
 
                 DispatchQueue.main.async {
                     guard let self = self,
@@ -115,6 +133,41 @@ class FeedParser: ObservableObject {
                 }
             }.resume()
         }
+    }
+
+    /// Extracts the first reasonably-sized image from page HTML, resolving relative URLs.
+    private static let pageImgRegex: NSRegularExpression? =
+        try? NSRegularExpression(pattern: "<img[^>]+src\\s*=\\s*[\"']([^\"']+)[\"']", options: .caseInsensitive)
+
+    private static func extractFirstPageImage(from html: String, baseURL: URL) -> String? {
+        guard let regex = pageImgRegex else { return nil }
+        let range = NSRange(html.startIndex..., in: html)
+        let matches = regex.matches(in: html, range: range)
+
+        for match in matches.prefix(10) { // Check first 10 images
+            guard let urlRange = Range(match.range(at: 1), in: html) else { continue }
+            var src = String(html[urlRange])
+
+            // Skip tiny icons, tracking pixels, data URIs, SVGs
+            let lower = src.lowercased()
+            if lower.contains("data:") || lower.contains(".svg") ||
+               lower.contains("pixel") || lower.contains("tracking") ||
+               lower.contains("1x1") || lower.contains("spacer") ||
+               lower.contains("logo") || lower.contains("icon") ||
+               lower.contains("avatar") || lower.contains("badge") { continue }
+
+            // Resolve relative URLs
+            if src.hasPrefix("//") {
+                src = "https:" + src
+            } else if src.hasPrefix("/") {
+                if let scheme = baseURL.scheme, let host = baseURL.host {
+                    src = "\(scheme)://\(host)\(src)"
+                }
+            }
+
+            if src.hasPrefix("http") { return src }
+        }
+        return nil
     }
 
     // MARK: - Deduplication
