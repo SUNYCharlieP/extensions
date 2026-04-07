@@ -678,11 +678,25 @@ struct CompactRowView: View {
 
     private var compactPlaceholder: some View {
         ZStack {
-            Color(.tertiarySystemGroupedBackground)
-            Image(systemName: "newspaper.fill")
-                .font(.body)
+            LinearGradient(
+                colors: [.arcaOrange.opacity(0.08), .arcaRed.opacity(0.05)],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+            Image(systemName: Self.categoryIcon(for: item.category))
+                .font(.title3)
                 .foregroundStyle(.arcaGradient)
         }
         .frame(width: 80, height: 64)
+    }
+
+    private static func categoryIcon(for category: String) -> String {
+        switch category {
+        case "Apple": return "apple.logo"
+        case "Hacker News": return "terminal.fill"
+        case "Security": return "lock.shield.fill"
+        case "Science": return "atom"
+        default: return "newspaper.fill"
+        }
     }
 }
