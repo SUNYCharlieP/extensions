@@ -95,7 +95,13 @@ struct ArticleReaderView: View {
 // MARK: - Precompiled Content Rules
 
 enum ReaderContentRules {
-    static var compiled: WKContentRuleList?
+    private static let lock = NSLock()
+    private static var _compiled: WKContentRuleList?
+    static var compiled: WKContentRuleList? {
+        lock.lock()
+        defer { lock.unlock() }
+        return _compiled
+    }
 
     static func precompile() {
         let rules = """
@@ -105,7 +111,9 @@ enum ReaderContentRules {
             forIdentifier: "ReaderRules",
             encodedContentRuleList: rules
         ) { ruleList, _ in
-            compiled = ruleList
+            lock.lock()
+            _compiled = ruleList
+            lock.unlock()
         }
     }
 }
@@ -223,15 +231,45 @@ struct ReaderWebView: UIViewRepresentable {
 
     class Coordinator: NSObject, WKNavigationDelegate {
         let onFinished: (() -> Void)?
+        private var hasFinished = false
 
         init(onFinished: (() -> Void)?) {
             self.onFinished = onFinished
+            super.init()
+            // Timeout fallback — force-show after 10 seconds even if didFinish never fires
+            DispatchQueue.main.asyncAfter(deadline: .now() + 10) { [weak self] in
+                self?.complete()
+            }
+        }
+
+        private func complete() {
+            guard !hasFinished else { return }
+            hasFinished = true
+            onFinished?()
         }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-            // Small delay to let reader CSS apply
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
-                self?.onFinished?()
+                self?.complete()
+            }
+        }
+
+        func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+            DispatchQueue.main.async { [weak self] in
+                self?.complete()
+            }
+        }
+
+        func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+            DispatchQueue.main.async { [weak self] in
+                self?.complete()
+            }
+        }
+
+        func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+            // Show content once first bytes render — faster than waiting for full didFinish
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
+                self?.complete()
             }
         }
     }

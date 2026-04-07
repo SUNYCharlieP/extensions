@@ -7,10 +7,12 @@ class PreferenceEngine {
     private let sourceKey = "pref_source_counts"
     private let keywordKey = "pref_keyword_counts"
     private let totalTapsKey = "pref_total_taps"
+    private let likedKey = "pref_liked_urls"
 
     private var cachedSources: [String: Int]
     private var cachedKeywords: [String: Int]
     private var cachedTotalTaps: Int
+    private var cachedLikedURLs: Set<String>
 
     private let stopWords: Set<String> = [
         "the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
@@ -35,6 +37,7 @@ class PreferenceEngine {
         cachedSources = defaults.dictionary(forKey: sourceKey) as? [String: Int] ?? [:]
         cachedKeywords = defaults.dictionary(forKey: keywordKey) as? [String: Int] ?? [:]
         cachedTotalTaps = defaults.integer(forKey: totalTapsKey)
+        cachedLikedURLs = Set(defaults.stringArray(forKey: likedKey) ?? [])
     }
 
     func recordTap(on item: FeedItem) {
@@ -46,15 +49,34 @@ class PreferenceEngine {
         persistAsync()
     }
 
+    func recordLike(on item: FeedItem) {
+        let url = item.url.absoluteString
+        guard !cachedLikedURLs.contains(url) else { return }
+        cachedLikedURLs.insert(url)
+        // 3x weight — a like is a much stronger signal than a tap
+        cachedSources[item.source, default: 0] += 3
+        for keyword in extractKeywords(from: item.title) {
+            cachedKeywords[keyword, default: 0] += 3
+        }
+        cachedTotalTaps += 3
+        persistAsync()
+    }
+
+    func isLiked(_ item: FeedItem) -> Bool {
+        cachedLikedURLs.contains(item.url.absoluteString)
+    }
+
     private func persistAsync() {
         let sources = cachedSources
         let keywords = cachedKeywords
         let taps = cachedTotalTaps
+        let liked = Array(cachedLikedURLs)
         DispatchQueue.global(qos: .utility).async { [weak self] in
             guard let self = self else { return }
             self.defaults.set(sources, forKey: self.sourceKey)
             self.defaults.set(keywords, forKey: self.keywordKey)
             self.defaults.set(taps, forKey: self.totalTapsKey)
+            self.defaults.set(liked, forKey: self.likedKey)
         }
     }
 

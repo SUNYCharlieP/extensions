@@ -6,40 +6,29 @@ struct ContentView: View {
     @StateObject private var parser = FeedParser()
     @State private var selectedItem: FeedItem?
     @State private var hasAppeared = false
-    @State private var selectedCategory = "For You"
+    @State private var selectedCategory = "Top Picks"
 
-    private let categories = ["For You", "Apple", "General Tech", "Hacker News", "Security", "Science"]
+    private let categories = ["Top Picks", "Apple", "General Tech", "Hacker News", "Security", "Science"]
 
     var body: some View {
-        NavigationStack {
-            ZStack {
-                Color(.systemGroupedBackground)
-                    .ignoresSafeArea()
+        ZStack(alignment: .top) {
+            Color(.systemGroupedBackground)
+                .ignoresSafeArea()
 
-                if parser.isLoading && parser.items.isEmpty {
+            if parser.isLoading && parser.items.isEmpty {
+                VStack(spacing: 0) {
+                    arcaHeader
+                    Spacer()
                     ArcaLoadingView()
-                } else {
-                    feedContent
+                    Spacer()
                 }
-            }
-            .navigationTitle("Arca")
-            .navigationBarTitleDisplayMode(.large)
-            .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button {
-                        parser.fetchAllFeeds()
-                    } label: {
-                        Image(systemName: "arrow.clockwise")
-                            .foregroundColor(.arcaOrange)
-                    }
-                    .disabled(parser.isLoading)
-                }
-            }
-            .fullScreenCover(item: $selectedItem) { item in
-                ArticleReaderView(item: item)
+            } else {
+                feedContent
             }
         }
-        .tint(.arcaOrange)
+        .fullScreenCover(item: $selectedItem) { item in
+            ArticleReaderView(item: item)
+        }
         .onAppear {
             guard !hasAppeared else { return }
             hasAppeared = true
@@ -47,10 +36,46 @@ struct ContentView: View {
         }
     }
 
+    // MARK: - Gradient Header
+
+    private var arcaHeader: some View {
+        ZStack {
+            LinearGradient(
+                colors: [.arcaOrange, Color(red: 1.0, green: 0.33, blue: 0.27), .arcaRed],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+            .ignoresSafeArea(edges: .top)
+
+            VStack(spacing: 0) {
+                // Refresh button row
+                HStack {
+                    Spacer()
+                    Button {
+                        parser.fetchAllFeeds()
+                    } label: {
+                        Image(systemName: "arrow.clockwise")
+                            .font(.body.weight(.semibold))
+                            .foregroundColor(.white.opacity(0.85))
+                    }
+                    .disabled(parser.isLoading)
+                    .padding(.trailing, 16)
+                    .padding(.top, 4)
+                }
+
+                // Logo
+                ArcaLogoView()
+                    .frame(width: 34, height: 46)
+                    .padding(.bottom, 16)
+            }
+        }
+        .frame(height: 90)
+    }
+
     // MARK: - Feed Content
 
     private var filteredItems: [FeedItem] {
-        if selectedCategory == "For You" {
+        if selectedCategory == "Top Picks" {
             return parser.items
         }
         return parser.items.filter { $0.category == selectedCategory }
@@ -59,6 +84,9 @@ struct ContentView: View {
     private var feedContent: some View {
         ScrollView {
             VStack(spacing: 0) {
+                // Gradient header
+                arcaHeader
+
                 // Category pills
                 categoryBar
                     .padding(.top, 4)
@@ -77,7 +105,7 @@ struct ContentView: View {
                 // Remaining articles
                 let remaining = Array(filteredItems.dropFirst())
 
-                if selectedCategory == "For You" && !remaining.isEmpty {
+                if selectedCategory == "Top Picks" && !remaining.isEmpty {
                     sectionedFeed(remaining)
                 } else {
                     flatFeed(remaining)
@@ -103,8 +131,8 @@ struct ContentView: View {
                     } label: {
                         Text(cat)
                             .font(.caption.weight(.semibold))
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 7)
+                            .padding(.horizontal, 18)
+                            .padding(.vertical, 9)
                             .background(
                                 selectedCategory == cat
                                     ? AnyShapeStyle(.arcaGradient)
@@ -226,61 +254,63 @@ struct ArcaLoadingView: View {
     @State private var phase: CGFloat = 0
 
     var body: some View {
-        VStack(spacing: 24) {
+        VStack(spacing: 20) {
             ZStack {
-                // Outer arch
-                ArcaArchShape(openAmount: 0.7)
+                // Outer arch — faded base
+                ArcaArchShape()
                     .stroke(
-                        LinearGradient(
-                            colors: [.arcaOrange.opacity(0.3), .arcaRed.opacity(0.3)],
-                            startPoint: .leading,
-                            endPoint: .trailing
-                        ),
-                        style: StrokeStyle(lineWidth: 5, lineCap: .round)
+                        Color.arcaOrange.opacity(0.2),
+                        style: StrokeStyle(lineWidth: 6, lineCap: .round)
                     )
-                    .frame(width: 80, height: 60)
+                    .frame(width: 70, height: 80)
 
-                ArcaArchShape(openAmount: 0.7)
-                    .trim(from: phase, to: min(phase + 0.4, 1.0))
+                // Outer arch — sweep highlight
+                ArcaArchShape()
+                    .trim(from: sweepFrom(phase), to: sweepTo(phase))
                     .stroke(
                         LinearGradient(
                             colors: [.arcaOrange, .arcaRed],
                             startPoint: .leading,
                             endPoint: .trailing
                         ),
-                        style: StrokeStyle(lineWidth: 5, lineCap: .round)
+                        style: StrokeStyle(lineWidth: 6, lineCap: .round)
                     )
-                    .frame(width: 80, height: 60)
+                    .frame(width: 70, height: 80)
 
-                // Inner arch
-                ArcaArchShape(openAmount: 0.7)
+                // Inner arch — faded base
+                ArcaArchShape()
+                    .stroke(
+                        Color.arcaOrange.opacity(0.12),
+                        style: StrokeStyle(lineWidth: 4, lineCap: .round)
+                    )
+                    .frame(width: 38, height: 56)
+
+                // Inner arch — sweep highlight (slightly delayed)
+                ArcaArchShape()
+                    .trim(from: sweepFrom(phase - 0.12), to: sweepTo(phase - 0.12))
                     .stroke(
                         LinearGradient(
-                            colors: [.arcaOrange.opacity(0.2), .arcaRed.opacity(0.2)],
+                            colors: [.arcaOrange.opacity(0.7), .arcaRed.opacity(0.7)],
                             startPoint: .leading,
                             endPoint: .trailing
                         ),
-                        style: StrokeStyle(lineWidth: 3.5, lineCap: .round)
+                        style: StrokeStyle(lineWidth: 4, lineCap: .round)
                     )
-                    .frame(width: 48, height: 36)
+                    .frame(width: 38, height: 56)
 
-                ArcaArchShape(openAmount: 0.7)
-                    .trim(from: max(phase - 0.15, 0), to: min(phase + 0.25, 1.0))
-                    .stroke(
-                        LinearGradient(
-                            colors: [.arcaOrange.opacity(0.6), .arcaRed.opacity(0.6)],
-                            startPoint: .leading,
-                            endPoint: .trailing
-                        ),
-                        style: StrokeStyle(lineWidth: 3.5, lineCap: .round)
-                    )
-                    .frame(width: 48, height: 36)
-
-                // Apex dot
+                // Beacon dot at apex
                 Circle()
-                    .fill(Color.arcaOrange.opacity(0.4 + 0.6 * sin(Double(phase) * Double.pi * 2)))
-                    .frame(width: 7, height: 7)
-                    .offset(y: -30)
+                    .fill(
+                        RadialGradient(
+                            colors: [.white, .arcaOrange.opacity(0.6), .arcaOrange.opacity(0)],
+                            center: .center,
+                            startRadius: 0,
+                            endRadius: 8
+                        )
+                    )
+                    .frame(width: 16, height: 16)
+                    .opacity(beaconOpacity(phase))
+                    .offset(y: -40)
             }
 
             Text("Loading your feed")
@@ -288,33 +318,117 @@ struct ArcaLoadingView: View {
                 .foregroundColor(.secondary)
         }
         .onAppear {
-            withAnimation(.linear(duration: 1.8).repeatForever(autoreverses: false)) {
+            withAnimation(.easeInOut(duration: 1.6).repeatForever(autoreverses: false)) {
                 phase = 1.0
             }
         }
     }
+
+    // Sweep travels left → apex → right with a 30% segment length
+    private func sweepFrom(_ p: CGFloat) -> CGFloat {
+        let t = max(0, p * 1.5 - 0.15)
+        return max(0, min(1, t))
+    }
+
+    private func sweepTo(_ p: CGFloat) -> CGFloat {
+        let t = p * 1.5 - 0.15 + 0.3
+        return max(0, min(1, t))
+    }
+
+    // Beacon glows when sweep passes the apex (~50% of path)
+    private func beaconOpacity(_ p: CGFloat) -> Double {
+        let peak = 0.5
+        let dist = abs(Double(p) - peak)
+        return max(0.1, 1.0 - dist * 3.5)
+    }
 }
 
 struct ArcaArchShape: Shape {
-    var openAmount: CGFloat
-
     func path(in rect: CGRect) -> Path {
         var path = Path()
         let w = rect.width
         let h = rect.height
-        let bottomY = h
-        let topY = h * (1 - openAmount)
 
-        path.move(to: CGPoint(x: 0, y: bottomY))
-        path.addQuadCurve(
-            to: CGPoint(x: w / 2, y: topY),
-            control: CGPoint(x: 0, y: topY)
+        // Pointed gateway arch matching the Arca logo
+        path.move(to: CGPoint(x: 0, y: h))
+        path.addCurve(
+            to: CGPoint(x: w / 2, y: 0),
+            control1: CGPoint(x: w * 0.02, y: h * 0.25),
+            control2: CGPoint(x: w * 0.25, y: 0)
         )
-        path.addQuadCurve(
-            to: CGPoint(x: w, y: bottomY),
-            control: CGPoint(x: w, y: topY)
+        path.addCurve(
+            to: CGPoint(x: w, y: h),
+            control1: CGPoint(x: w * 0.75, y: 0),
+            control2: CGPoint(x: w * 0.98, y: h * 0.25)
         )
         return path
+    }
+}
+
+// MARK: - Logo View (for gradient header)
+
+struct ArcaLogoView: View {
+    var body: some View {
+        Canvas { context, size in
+            let w = size.width
+            let h = size.height
+            let inset: CGFloat = 4 // padding so strokes aren't clipped
+
+            let drawW = w - inset * 2
+            let drawH = h - inset * 2
+            let offsetX = inset
+            let offsetY = inset
+
+            // Outer arch
+            var outer = Path()
+            outer.move(to: CGPoint(x: offsetX, y: offsetY + drawH))
+            outer.addCurve(
+                to: CGPoint(x: offsetX + drawW / 2, y: offsetY),
+                control1: CGPoint(x: offsetX + drawW * 0.02, y: offsetY + drawH * 0.25),
+                control2: CGPoint(x: offsetX + drawW * 0.25, y: offsetY)
+            )
+            outer.addCurve(
+                to: CGPoint(x: offsetX + drawW, y: offsetY + drawH),
+                control1: CGPoint(x: offsetX + drawW * 0.75, y: offsetY),
+                control2: CGPoint(x: offsetX + drawW * 0.98, y: offsetY + drawH * 0.25)
+            )
+            context.stroke(
+                outer,
+                with: .color(.white.opacity(0.95)),
+                style: StrokeStyle(lineWidth: 3.5, lineCap: .round)
+            )
+
+            // Inner arch
+            let innerW = drawW * 0.5
+            let innerH = drawH * 0.65
+            let innerX = offsetX + (drawW - innerW) / 2
+            let innerY = offsetY + drawH - innerH
+
+            var inner = Path()
+            inner.move(to: CGPoint(x: innerX, y: offsetY + drawH))
+            inner.addCurve(
+                to: CGPoint(x: innerX + innerW / 2, y: innerY),
+                control1: CGPoint(x: innerX + innerW * 0.02, y: innerY + innerH * 0.25),
+                control2: CGPoint(x: innerX + innerW * 0.25, y: innerY)
+            )
+            inner.addCurve(
+                to: CGPoint(x: innerX + innerW, y: offsetY + drawH),
+                control1: CGPoint(x: innerX + innerW * 0.75, y: innerY),
+                control2: CGPoint(x: innerX + innerW * 0.98, y: innerY + innerH * 0.25)
+            )
+            context.stroke(
+                inner,
+                with: .color(.white.opacity(0.5)),
+                style: StrokeStyle(lineWidth: 2.5, lineCap: .round)
+            )
+
+            // Beacon dot
+            let beaconCenter = CGPoint(x: offsetX + drawW / 2, y: offsetY)
+            let glowRect = CGRect(x: beaconCenter.x - 4, y: beaconCenter.y - 4, width: 8, height: 8)
+            context.fill(Path(ellipseIn: glowRect), with: .color(.white.opacity(0.25)))
+            let dotRect = CGRect(x: beaconCenter.x - 2, y: beaconCenter.y - 2, width: 4, height: 4)
+            context.fill(Path(ellipseIn: dotRect), with: .color(.white.opacity(0.9)))
+        }
     }
 }
 
@@ -322,6 +436,7 @@ struct ArcaArchShape: Shape {
 
 struct HeroCardView: View {
     let item: FeedItem
+    @State private var isLiked = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -334,7 +449,17 @@ struct HeroCardView: View {
                         .aspectRatio(contentMode: .fill)
                         .frame(height: 200)
                         .clipped()
-                case .failure, .empty:
+                case .empty:
+                    if item.imageURL != nil {
+                        ZStack {
+                            heroPlaceholder
+                            ProgressView()
+                                .tint(.arcaOrange)
+                        }
+                    } else {
+                        heroPlaceholder
+                    }
+                case .failure:
                     heroPlaceholder
                 @unknown default:
                     heroPlaceholder
@@ -344,7 +469,7 @@ struct HeroCardView: View {
             .frame(maxWidth: .infinity)
 
             VStack(alignment: .leading, spacing: 8) {
-                // Source pill + time
+                // Source pill + time + like
                 HStack {
                     Text(item.source)
                         .font(.caption2.weight(.bold))
@@ -359,6 +484,21 @@ struct HeroCardView: View {
                     Text(item.pubDate, formatter: Self.relativeFormatter)
                         .font(.caption2)
                         .foregroundColor(.secondary)
+
+                    Button {
+                        withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) {
+                            isLiked.toggle()
+                        }
+                        if isLiked {
+                            PreferenceEngine.shared.recordLike(on: item)
+                        }
+                    } label: {
+                        Image(systemName: isLiked ? "heart.fill" : "heart")
+                            .font(.subheadline)
+                            .foregroundColor(isLiked ? .arcaRed : .secondary.opacity(0.5))
+                            .scaleEffect(isLiked ? 1.15 : 1.0)
+                    }
+                    .buttonStyle(.plain)
                 }
 
                 Text(item.title)
@@ -377,6 +517,9 @@ struct HeroCardView: View {
         }
         .background(Color(.secondarySystemGroupedBackground))
         .clipShape(RoundedRectangle(cornerRadius: 16))
+        .onAppear {
+            isLiked = PreferenceEngine.shared.isLiked(item)
+        }
     }
 
     private var heroPlaceholder: some View {
@@ -470,6 +613,7 @@ struct TrendingCardView: View {
 
 struct CompactRowView: View {
     let item: FeedItem
+    @State private var isLiked = false
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
@@ -518,10 +662,29 @@ struct CompactRowView: View {
             }
 
             Spacer(minLength: 0)
+
+            Button {
+                withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) {
+                    isLiked.toggle()
+                }
+                if isLiked {
+                    PreferenceEngine.shared.recordLike(on: item)
+                }
+            } label: {
+                Image(systemName: isLiked ? "heart.fill" : "heart")
+                    .font(.subheadline)
+                    .foregroundColor(isLiked ? .arcaRed : .secondary.opacity(0.5))
+                    .scaleEffect(isLiked ? 1.15 : 1.0)
+            }
+            .buttonStyle(.plain)
+            .padding(.top, 4)
         }
         .padding(10)
         .background(Color(.secondarySystemGroupedBackground))
         .clipShape(RoundedRectangle(cornerRadius: 12))
+        .onAppear {
+            isLiked = PreferenceEngine.shared.isLiked(item)
+        }
     }
 
     private static let relativeFormatter: RelativeDateTimeFormatter = {

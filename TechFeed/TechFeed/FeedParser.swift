@@ -48,7 +48,46 @@ class FeedParser: ObservableObject {
     }
 
     func fetchAllFeedsAsync() async {
-        fetchAllFeeds()
+        await withCheckedContinuation { continuation in
+            guard !isLoading else {
+                continuation.resume()
+                return
+            }
+            isLoading = true
+            var collectedItems: [FeedItem] = []
+            let group = DispatchGroup()
+
+            for feed in RSSFeed.allFeeds {
+                guard let url = URL(string: feed.url) else { continue }
+                group.enter()
+                URLSession.shared.dataTask(with: url) { [weak self] data, _, error in
+                    defer { group.leave() }
+                    guard let self = self, let data = data, error == nil else { return }
+
+                    let delegate = FeedXMLParserDelegate(sourceName: feed.name, category: feed.category)
+                    let parser = XMLParser(data: data)
+                    parser.delegate = delegate
+                    parser.parse()
+
+                    self.lock.lock()
+                    collectedItems.append(contentsOf: delegate.items)
+                    self.lock.unlock()
+                }.resume()
+            }
+
+            group.notify(queue: .main) { [weak self] in
+                guard let self = self else {
+                    continuation.resume()
+                    return
+                }
+                let filtered = collectedItems.filter { !Self.isPromo($0) }
+                let sorted = self.preferences.scoreItems(filtered)
+                self.items = sorted
+                self.isLoading = false
+                self.fetchMissingImages()
+                continuation.resume()
+            }
+        }
     }
 
     private func fetchMissingImages() {
