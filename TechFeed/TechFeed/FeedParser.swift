@@ -104,12 +104,10 @@ class FeedParser: ObservableObject {
 
             ogImageSession.dataTask(with: request) { [weak self] data, _, _ in
                 guard let data = data,
-                      let html = String(data: data.prefix(100_000), encoding: .utf8) else { return }
+                      let html = String(data: data.prefix(150_000), encoding: .utf8) else { return }
 
-                // Only use og:image or twitter:image — these are reliably sized.
-                // Random page images and favicons look worse than the placeholder.
-                guard let ogImage = Self.extractOGImage(from: html),
-                      let imageURL = URL(string: ogImage) else { return }
+                guard let imageStr = Self.extractBestImage(from: html, pageURL: articleURL),
+                      let imageURL = URL(string: imageStr) else { return }
 
                 DispatchQueue.main.async {
                     guard let self = self,
@@ -120,6 +118,19 @@ class FeedParser: ObservableObject {
         }
     }
 
+    /// Cascading image extraction — tries every method before giving up.
+    private static func extractBestImage(from html: String, pageURL: URL) -> String? {
+        // 1. og:image / twitter:image (most reliable)
+        if let meta = extractMetaImage(from: html) { return meta }
+
+        // 2. <link rel="image_src"> or itemprop="image"
+        if let link = extractLinkImage(from: html) { return link }
+
+        // 3. First meaningful <img> in page body (skip icons, avatars, etc.)
+        if let img = extractContentImage(from: html, baseURL: pageURL) { return img }
+
+        return nil
+    }
 
 
     // MARK: - Deduplication
@@ -241,24 +252,121 @@ class FeedParser: ObservableObject {
         }
     }
 
-    private static let ogImagePatterns: [NSRegularExpression] = {
-        let raw = [
-            "property\\s*=\\s*[\"']og:image[\"'][^>]*content\\s*=\\s*[\"']([^\"']+)[\"']",
-            "content\\s*=\\s*[\"']([^\"']+)[\"'][^>]*property\\s*=\\s*[\"']og:image[\"']",
-            "name\\s*=\\s*[\"']twitter:image[\"'][^>]*content\\s*=\\s*[\"']([^\"']+)[\"']",
-            "content\\s*=\\s*[\"']([^\"']+)[\"'][^>]*name\\s*=\\s*[\"']twitter:image[\"']",
+    // MARK: - Image Extraction Pipeline
+
+    /// Step 1: og:image, twitter:image, og:image:url, og:image:secure_url
+    private static let metaImagePatterns: [NSRegularExpression] = {
+        let tags = [
+            "og:image", "og:image:secure_url", "og:image:url",
+            "twitter:image", "twitter:image:src",
         ]
-        return raw.compactMap { try? NSRegularExpression(pattern: $0, options: .caseInsensitive) }
+        var patterns: [String] = []
+        for tag in tags {
+            let escaped = NSRegularExpression.escapedPattern(for: tag)
+            // property="tag" ... content="url"
+            patterns.append("(?:property|name)\\s*=\\s*[\"']\(escaped)[\"'][^>]*content\\s*=\\s*[\"']([^\"']+)[\"']")
+            // content="url" ... property="tag"
+            patterns.append("content\\s*=\\s*[\"']([^\"']+)[\"'][^>]*(?:property|name)\\s*=\\s*[\"']\(escaped)[\"']")
+        }
+        return patterns.compactMap { try? NSRegularExpression(pattern: $0, options: .caseInsensitive) }
     }()
 
-    private static func extractOGImage(from html: String) -> String? {
+    private static func extractMetaImage(from html: String) -> String? {
         let range = NSRange(html.startIndex..., in: html)
-        for regex in ogImagePatterns {
+        for regex in metaImagePatterns {
             if let match = regex.firstMatch(in: html, range: range),
                let urlRange = Range(match.range(at: 1), in: html) {
                 let url = String(html[urlRange])
                 if url.hasPrefix("http") { return url }
             }
+        }
+        return nil
+    }
+
+    /// Step 2: <link rel="image_src">, <meta itemprop="image">, <meta name="thumbnail">
+    private static let linkImagePatterns: [NSRegularExpression] = {
+        let raw = [
+            "<link[^>]+rel\\s*=\\s*[\"']image_src[\"'][^>]+href\\s*=\\s*[\"']([^\"']+)[\"']",
+            "<meta[^>]+itemprop\\s*=\\s*[\"']image[\"'][^>]+content\\s*=\\s*[\"']([^\"']+)[\"']",
+            "<meta[^>]+name\\s*=\\s*[\"']thumbnail[\"'][^>]+content\\s*=\\s*[\"']([^\"']+)[\"']",
+        ]
+        return raw.compactMap { try? NSRegularExpression(pattern: $0, options: .caseInsensitive) }
+    }()
+
+    private static func extractLinkImage(from html: String) -> String? {
+        let range = NSRange(html.startIndex..., in: html)
+        for regex in linkImagePatterns {
+            if let match = regex.firstMatch(in: html, range: range),
+               let urlRange = Range(match.range(at: 1), in: html) {
+                let url = String(html[urlRange])
+                if url.hasPrefix("http") { return url }
+            }
+        }
+        return nil
+    }
+
+    /// Step 3: First real content image from page body.
+    /// Filters out icons, logos, avatars, tracking pixels by checking
+    /// URL patterns and explicit width/height attributes.
+    private static let contentImgRegex: NSRegularExpression? =
+        try? NSRegularExpression(
+            pattern: "<img\\s[^>]*src\\s*=\\s*[\"']([^\"']+)[\"'][^>]*>",
+            options: .caseInsensitive
+        )
+
+    private static let skipImagePatterns: Set<String> = [
+        "logo", "icon", "avatar", "badge", "emoji", "button", "spacer",
+        "pixel", "tracking", "1x1", "blank", "spinner", "loading",
+        "gravatar", "favicon", "sprite", "ads", "banner-ad",
+        "data:", ".svg", ".gif",
+    ]
+
+    private static func extractContentImage(from html: String, baseURL: URL) -> String? {
+        guard let regex = contentImgRegex else { return nil }
+        let range = NSRange(html.startIndex..., in: html)
+        let matches = regex.matches(in: html, range: range)
+
+        for match in matches.prefix(20) {
+            guard let srcRange = Range(match.range(at: 1), in: html) else { continue }
+            let fullTag: String
+            if let tagRange = Range(match.range(at: 0), in: html) {
+                fullTag = String(html[tagRange]).lowercased()
+            } else {
+                fullTag = ""
+            }
+            var src = String(html[srcRange])
+            let srcLower = src.lowercased()
+
+            // Skip known junk patterns
+            if skipImagePatterns.contains(where: { srcLower.contains($0) }) { continue }
+
+            // Skip images with explicit tiny dimensions
+            if let width = extractDimension("width", from: fullTag), width < 100 { continue }
+            if let height = extractDimension("height", from: fullTag), height < 80 { continue }
+
+            // Resolve relative URLs
+            if src.hasPrefix("//") {
+                src = "https:" + src
+            } else if src.hasPrefix("/") {
+                if let scheme = baseURL.scheme, let host = baseURL.host {
+                    src = "\(scheme)://\(host)\(src)"
+                }
+            }
+
+            if src.hasPrefix("http") { return src }
+        }
+        return nil
+    }
+
+    /// Extracts a numeric dimension from an img tag attribute (e.g., width="120" or width: 120px)
+    private static func extractDimension(_ attr: String, from tag: String) -> Int? {
+        // Check attribute: width="120"
+        let attrPattern = "\(attr)\\s*=\\s*[\"']?(\\d+)"
+        if let regex = try? NSRegularExpression(pattern: attrPattern, options: .caseInsensitive),
+           let match = regex.firstMatch(in: tag, range: NSRange(tag.startIndex..., in: tag)),
+           let numRange = Range(match.range(at: 1), in: tag),
+           let num = Int(tag[numRange]) {
+            return num
         }
         return nil
     }
