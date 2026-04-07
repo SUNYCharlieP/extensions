@@ -119,19 +119,35 @@ class FeedParser: ObservableObject {
 
     // MARK: - Deduplication
 
+    /// Words that carry no topical signal — filtered before comparing titles.
+    private static let dedupStopWords: Set<String> = [
+        "the", "for", "and", "but", "not", "you", "all", "can", "her", "was",
+        "one", "our", "out", "are", "has", "his", "how", "its", "may", "new",
+        "now", "old", "see", "way", "who", "did", "get", "got", "had", "him",
+        "let", "say", "she", "too", "use", "with", "this", "that", "from",
+        "have", "been", "will", "more", "when", "what", "some", "than", "them",
+        "then", "into", "just", "over", "also", "back", "after", "could", "would",
+        "about", "which", "their", "there", "first", "being", "where", "those",
+        "still", "every", "should", "while", "here", "says", "said", "like",
+        "make", "made", "most", "much", "many", "your", "does", "best", "very",
+        "other", "show", "shows", "report", "reports", "according", "update",
+        "look", "looks", "why", "how", "big", "top", "via",
+    ]
+
+    private static func significantWords(from title: String) -> Set<String> {
+        let words = title.lowercased()
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { $0.count > 2 && !dedupStopWords.contains($0) }
+        return Set(words)
+    }
+
     private static func deduplicate(_ items: [FeedItem], preferences: PreferenceEngine) -> [FeedItem] {
         guard !items.isEmpty else { return items }
 
         var result: [FeedItem] = []
         var usedIndices = Set<Int>()
 
-        // Extract keyword sets once for each item
-        let keywordSets: [Set<String>] = items.map { item in
-            let words = item.title.lowercased()
-                .components(separatedBy: CharacterSet.alphanumerics.inverted)
-                .filter { $0.count > 2 }
-            return Set(words)
-        }
+        let keywordSets = items.map { significantWords(from: $0.title) }
 
         for i in 0..<items.count {
             guard !usedIndices.contains(i) else { continue }
@@ -144,23 +160,24 @@ class FeedParser: ObservableObject {
                 continue
             }
 
-            // Find duplicates of this article
             for j in (i + 1)..<items.count {
                 guard !usedIndices.contains(j) else { continue }
                 let wordsB = keywordSets[j]
                 guard wordsB.count >= 2 else { continue }
 
-                let intersection = wordsA.intersection(wordsB).count
-                let union = wordsA.union(wordsB).count
-                let similarity = Double(intersection) / Double(union)
+                let shared = wordsA.intersection(wordsB)
+                let union = wordsA.union(wordsB)
+                let jaccard = Double(shared.count) / Double(union.count)
 
-                if similarity > 0.5 {
+                // Match if Jaccard >= 0.4 OR if 3+ significant words overlap
+                // (catches differently-worded articles about the same subject)
+                if jaccard >= 0.4 || shared.count >= 3 {
                     group.append(j)
                     usedIndices.insert(j)
                 }
             }
 
-            // Pick the best from the group: prefer user's preferred source, then image, then newest
+            // Pick the best: preferred source → has image → newest
             let best = group.max { a, b in
                 let itemA = items[a]
                 let itemB = items[b]
