@@ -506,17 +506,8 @@ struct HeroCardView: View {
     }
 
     private var heroPlaceholder: some View {
-        ZStack {
-            LinearGradient(
-                colors: [.arcaOrange.opacity(0.15), .arcaRed.opacity(0.1)],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-            Image(systemName: "newspaper.fill")
-                .font(.largeTitle)
-                .foregroundStyle(.arcaGradient)
-        }
-        .frame(height: 200)
+        SourceInitialView(source: item.source, size: .hero)
+            .frame(height: 200)
     }
 
     private static let relativeFormatter: RelativeDateTimeFormatter = {
@@ -576,13 +567,8 @@ struct TrendingCardView: View {
     }
 
     private var trendingPlaceholder: some View {
-        ZStack {
-            Color(.tertiarySystemGroupedBackground)
-            Image(systemName: "newspaper.fill")
-                .font(.title3)
-                .foregroundStyle(.arcaGradient)
-        }
-        .frame(width: 200, height: 120)
+        SourceInitialView(source: item.source, size: .trending)
+            .frame(width: 200, height: 120)
     }
 
     private static let relativeFormatter: RelativeDateTimeFormatter = {
@@ -677,26 +663,58 @@ struct CompactRowView: View {
     }()
 
     private var compactPlaceholder: some View {
+        SourceInitialView(source: item.source, size: .compact)
+            .frame(width: 80, height: 64)
+    }
+}
+
+// MARK: - Source Initial Placeholder
+
+enum PlaceholderSize {
+    case compact, trending, hero
+}
+
+struct SourceInitialView: View {
+    let source: String
+    let size: PlaceholderSize
+
+    private var initial: String {
+        String(source.prefix(1)).uppercased()
+    }
+
+    private var colors: (Color, Color) {
+        switch source {
+        case "Hacker News":     return (Color(red: 1.0, green: 0.4, blue: 0.0), Color(red: 0.85, green: 0.25, blue: 0.0))
+        case "Krebs on Security": return (Color(red: 0.2, green: 0.5, blue: 0.8), Color(red: 0.1, green: 0.3, blue: 0.6))
+        case "9to5Mac":         return (Color(red: 0.2, green: 0.2, blue: 0.2), Color(red: 0.35, green: 0.35, blue: 0.35))
+        case "MacRumors":       return (Color(red: 0.0, green: 0.48, blue: 1.0), Color(red: 0.0, green: 0.35, blue: 0.8))
+        case "The Verge":       return (Color(red: 0.5, green: 0.2, blue: 0.8), Color(red: 0.35, green: 0.1, blue: 0.6))
+        case "Ars Technica":    return (Color(red: 0.85, green: 0.25, blue: 0.0), Color(red: 0.65, green: 0.15, blue: 0.0))
+        case "TechCrunch":      return (Color(red: 0.15, green: 0.7, blue: 0.35), Color(red: 0.1, green: 0.5, blue: 0.25))
+        case "MIT Technology Review": return (Color(red: 0.8, green: 0.0, blue: 0.2), Color(red: 0.6, green: 0.0, blue: 0.15))
+        default:                return (.arcaOrange, .arcaRed)
+        }
+    }
+
+    private var fontSize: Font {
+        switch size {
+        case .compact: return .title2.weight(.heavy)
+        case .trending: return .largeTitle.weight(.heavy)
+        case .hero: return .system(size: 56, weight: .heavy)
+        }
+    }
+
+    var body: some View {
         ZStack {
             LinearGradient(
-                colors: [.arcaOrange.opacity(0.08), .arcaRed.opacity(0.05)],
+                colors: [colors.0, colors.1],
                 startPoint: .topLeading,
                 endPoint: .bottomTrailing
             )
-            Image(systemName: Self.categoryIcon(for: item.category))
-                .font(.title3)
-                .foregroundStyle(.arcaGradient)
-        }
-        .frame(width: 80, height: 64)
-    }
 
-    private static func categoryIcon(for category: String) -> String {
-        switch category {
-        case "Apple": return "apple.logo"
-        case "Hacker News": return "terminal.fill"
-        case "Security": return "lock.shield.fill"
-        case "Science": return "atom"
-        default: return "newspaper.fill"
+            Text(initial)
+                .font(fontSize)
+                .foregroundColor(.white.opacity(0.9))
         }
     }
 }
