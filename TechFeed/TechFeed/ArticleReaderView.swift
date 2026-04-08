@@ -232,14 +232,22 @@ struct ReaderWebView: UIViewRepresentable {
 
             /* ── Base typography ── */
             body {
-                font-family: -apple-system, system-ui, sans-serif !important;
-                font-size: 18px !important;
-                line-height: 1.7 !important;
-                max-width: 680px !important;
-                margin: 0 auto !important;
-                padding: 20px 16px 60px !important;
                 -webkit-text-size-adjust: 100% !important;
                 overflow-x: hidden !important;
+            }
+            /* Constrain article content width — but only direct article/main
+               containers, not the body itself (which breaks sites like
+               The Verge that use full-width wrappers with inner layout). */
+            article, main, [role="main"],
+            .article-body, .post-body, .entry-content,
+            .article-content, .story-body {
+                max-width: 680px !important;
+                margin-left: auto !important;
+                margin-right: auto !important;
+                padding-left: 16px !important;
+                padding-right: 16px !important;
+                font-size: 18px !important;
+                line-height: 1.7 !important;
             }
 
             /* ── Dark mode ── */

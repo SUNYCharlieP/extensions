@@ -554,7 +554,7 @@ struct SavedArticleRow: View {
                     .lineLimit(2)
 
                 HStack(spacing: 8) {
-                    Text(item.pubDate, style: .relative)
+                    Text(relativeTime(item.pubDate))
                         .font(.caption2)
                         .foregroundColor(.secondary)
 
@@ -589,14 +589,19 @@ struct SavedArticleRow: View {
 
 struct ShortsTab: View {
     @ObservedObject var parser: FeedParser
-    /// Selected by item ID, not integer index — stable across feed refreshes.
-    @State private var currentItemID: String?
+    @State private var currentIndex = 0
     @State private var hasTriedRefresh = false
     /// Track which item IDs we've already recorded taps for this session
     @State private var recordedIDs: Set<String> = []
 
     private var shortItems: [FeedItem] {
         parser.items.filter { $0.isShort }
+    }
+
+    /// Safe index — clamps to valid range
+    private var safeIndex: Int {
+        guard !shortItems.isEmpty else { return 0 }
+        return min(currentIndex, shortItems.count - 1)
     }
 
     var body: some View {
@@ -613,36 +618,37 @@ struct ShortsTab: View {
                         }
                     }
             } else {
-                // Rotation trick: iOS 16 TabView .page only pages horizontally.
-                // Rotate the TabView -90° and counter-rotate each page +90°.
-                GeometryReader { geo in
-                    TabView(selection: $currentItemID) {
-                        ForEach(shortItems) { item in
-                            ShortPlayerPage(
-                                item: item,
-                                isActive: item.id == currentItemID
-                            )
-                            .frame(width: geo.size.width, height: geo.size.height)
-                            .rotationEffect(.degrees(90))
-                            .tag(Optional(item.id))
-                        }
-                    }
-                    .tabViewStyle(.page(indexDisplayMode: .never))
-                    .frame(width: geo.size.height, height: geo.size.width)
-                    .rotationEffect(.degrees(-90))
-                    .frame(width: geo.size.width, height: geo.size.height)
-                }
+                // Simple one-at-a-time player — no rotation trick (causes rendering artifacts).
+                // Shows current short full-screen with swipe up/down to navigate.
+                ShortPlayerPage(
+                    item: shortItems[safeIndex],
+                    isActive: true
+                )
+                .id(shortItems[safeIndex].id) // Force new WebView per video
                 .ignoresSafeArea()
+                .gesture(
+                    DragGesture(minimumDistance: 50)
+                        .onEnded { value in
+                            // Swipe up → next, swipe down → previous
+                            if value.translation.height < -50 && currentIndex < shortItems.count - 1 {
+                                withAnimation { currentIndex += 1 }
+                            } else if value.translation.height > 50 && currentIndex > 0 {
+                                withAnimation { currentIndex -= 1 }
+                            }
+                        }
+                )
                 .onAppear {
-                    // Set initial selection if not set
-                    if currentItemID == nil, let first = shortItems.first {
-                        currentItemID = first.id
+                    let item = shortItems[safeIndex]
+                    if !recordedIDs.contains(item.id) {
+                        recordedIDs.insert(item.id)
+                        PreferenceEngine.shared.recordTap(on: item)
+                        ReadingStreakManager.shared.recordRead()
                     }
+                    ReadStateManager.shared.markRead(item)
                 }
-                .onChange(of: currentItemID) { newID in
-                    guard let newID = newID,
-                          let item = shortItems.first(where: { $0.id == newID }) else { return }
-                    // Only record once per item per session to avoid inflating scores/stats
+                .onChange(of: currentIndex) { newIndex in
+                    guard newIndex >= 0, newIndex < shortItems.count else { return }
+                    let item = shortItems[newIndex]
                     if !recordedIDs.contains(item.id) {
                         recordedIDs.insert(item.id)
                         PreferenceEngine.shared.recordTap(on: item)
@@ -807,29 +813,6 @@ private struct ShortEmbedWebView: UIViewRepresentable {
         config.allowsInlineMediaPlayback = true
         config.mediaTypesRequiringUserActionForPlayback = []
 
-        // Inject CSS to hide YouTube chrome and make the player full-screen
-        let css = WKUserScript(source: """
-        (function() {
-            var s = document.createElement('style');
-            s.textContent = `
-                /* Hide YouTube app-level chrome */
-                ytm-mobile-topbar-renderer, #topbar, #header,
-                .mobile-topbar-header, ytm-pivot-bar-renderer,
-                #pivot-bar, .ytm-autonav-bar, ytm-comment-section-renderer,
-                #related, ytm-item-section-renderer,
-                .watch-below-the-player, #secondary,
-                ytm-engagement-panel-section-list-renderer,
-                [class*="branding"], [class*="promo"],
-                ytm-shorts-shelf-renderer { display: none !important; }
-                /* Full-screen the video */
-                body { margin: 0 !important; padding: 0 !important; background: #000 !important; overflow: hidden !important; }
-                .html5-video-player, video { width: 100vw !important; height: 100vh !important; object-fit: contain !important; }
-            `;
-            document.documentElement.appendChild(s);
-        })();
-        """, injectionTime: .atDocumentStart, forMainFrameOnly: false)
-        config.userContentController.addUserScript(css)
-
         let webView = WKWebView(frame: .zero, configuration: config)
         webView.isOpaque = false
         webView.backgroundColor = .black
@@ -838,8 +821,6 @@ private struct ShortEmbedWebView: UIViewRepresentable {
         webView.scrollView.bounces = false
         webView.scrollView.contentInsetAdjustmentBehavior = .never
         webView.navigationDelegate = context.coordinator
-        // Use mobile Safari UA so YouTube serves mobile-friendly page
-        webView.customUserAgent = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
 
         loadVideo(in: webView)
         return webView
@@ -867,10 +848,12 @@ private struct ShortEmbedWebView: UIViewRepresentable {
         })
         guard !safeID.isEmpty else { return }
 
-        // Load the actual YouTube shorts page — no embed restrictions,
-        // proper Referer headers, and YouTube handles playback natively.
-        guard let url = URL(string: "https://m.youtube.com/shorts/\(safeID)") else { return }
-        let request = URLRequest(url: url)
+        // Load the YouTube embed URL directly as a request (NOT loadHTMLString).
+        // This gives proper origin headers so embeds work, and shows only the
+        // clean video player without YouTube's full page chrome.
+        guard let url = URL(string: "https://www.youtube.com/embed/\(safeID)?autoplay=1&playsinline=1&controls=1&rel=0&modestbranding=1&loop=1&playlist=\(safeID)") else { return }
+        var request = URLRequest(url: url)
+        request.setValue("https://www.youtube.com/", forHTTPHeaderField: "Referer")
         webView.load(request)
     }
 
@@ -882,17 +865,7 @@ private struct ShortEmbedWebView: UIViewRepresentable {
         }
 
         func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
-            // Allow YouTube navigations, block external links
-            if let url = navigationAction.request.url,
-               let host = url.host?.lowercased(),
-               (host.contains("youtube.com") || host.contains("googlevideo.com") || host.contains("ytimg.com") || host.contains("google.com")) {
-                decisionHandler(.allow)
-            } else if navigationAction.navigationType == .other {
-                // Allow sub-resource loads
-                decisionHandler(.allow)
-            } else {
-                decisionHandler(.cancel)
-            }
+            decisionHandler(.allow)
         }
     }
 }
@@ -954,7 +927,7 @@ struct VideoCardView: View {
                         .font(.caption)
                         .foregroundColor(.secondary)
 
-                    Text(item.pubDate, style: .relative)
+                    Text(relativeTime(item.pubDate))
                         .font(.caption)
                         .foregroundColor(.secondary)
 
@@ -978,7 +951,7 @@ struct VideoCardView: View {
 
                 Text(item.title)
                     .font(.subheadline.weight(.bold))
-                    .foregroundColor(isRead ? .secondary : .primary)
+                    .foregroundColor(.primary)
                     .lineLimit(2)
 
                 if !item.itemDescription.isEmpty {
@@ -992,8 +965,23 @@ struct VideoCardView: View {
         }
         .background(Color(.secondarySystemGroupedBackground))
         .clipShape(RoundedRectangle(cornerRadius: 16))
-        .opacity(isRead ? 0.75 : 1.0)
     }
+}
+
+// MARK: - Relative Time (no seconds)
+
+/// "2m ago", "3h ago", "1d ago" — never shows seconds.
+private func relativeTime(_ date: Date) -> String {
+    let seconds = Int(Date().timeIntervalSince(date))
+    if seconds < 60 { return "just now" }
+    let minutes = seconds / 60
+    if minutes < 60 { return "\(minutes)m ago" }
+    let hours = minutes / 60
+    if hours < 24 { return "\(hours)h ago" }
+    let days = hours / 24
+    if days < 7 { return "\(days)d ago" }
+    let weeks = days / 7
+    return "\(weeks)w ago"
 }
 
 // MARK: - Brand Colors
@@ -1452,7 +1440,7 @@ struct StoryCardView: View {
                         .font(.caption)
                         .foregroundColor(.secondary)
 
-                    Text(item.pubDate, style: .relative)
+                    Text(relativeTime(item.pubDate))
                         .font(.caption)
                         .foregroundColor(.secondary)
 
@@ -1515,7 +1503,7 @@ struct StoryCardView: View {
                         HStack(alignment: .top, spacing: 6) {
                             Text(item.title)
                                 .font(.headline.weight(.bold))
-                                .foregroundColor(isRead ? .secondary : .primary)
+                                .foregroundColor(.primary)
                                 .lineLimit(3)
                                 .fixedSize(horizontal: false, vertical: true)
                                 .multilineTextAlignment(.leading)
@@ -1563,8 +1551,6 @@ struct StoryCardView: View {
         }
         .background(Color(.secondarySystemGroupedBackground))
         .clipShape(RoundedRectangle(cornerRadius: 16))
-        .opacity(isRead ? 0.75 : 1.0)
-        // isLiked is now a computed property — no sync needed
     }
 }
 
@@ -1682,7 +1668,7 @@ struct MediumCardView: View {
                     Text("·")
                         .font(.caption2)
                         .foregroundColor(.secondary)
-                    Text(item.pubDate, style: .relative)
+                    Text(relativeTime(item.pubDate))
                         .font(.caption2)
                         .foregroundColor(.secondary)
                 }
@@ -1746,7 +1732,7 @@ struct CompactVideoCard: View {
                     Text("·")
                         .font(.caption2)
                         .foregroundColor(.secondary)
-                    Text(item.pubDate, style: .relative)
+                    Text(relativeTime(item.pubDate))
                         .font(.caption2)
                         .foregroundColor(.secondary)
                 }
@@ -1777,7 +1763,7 @@ struct WideRowView: View {
                     .lineLimit(3)
                     .fixedSize(horizontal: false, vertical: true)
 
-                Text(item.pubDate, style: .relative)
+                Text(relativeTime(item.pubDate))
                     .font(.caption2)
                     .foregroundColor(.secondary)
             }
