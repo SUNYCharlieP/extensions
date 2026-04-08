@@ -8,6 +8,8 @@ class ReadingStreakManager: ObservableObject {
     private let lastReadDateKey = "arca_last_read_date"
     private let longestStreakKey = "arca_longest_streak"
     private let totalArticlesKey = "arca_total_articles_read"
+    /// Serial queue prevents out-of-order UserDefaults writes.
+    private let persistQueue = DispatchQueue(label: "com.arca.streak.persist")
 
     /// Only currentStreak is @Published — it's the only value read in view bodies.
     /// longestStreak/totalArticlesRead are only shown in settings, read on demand.
@@ -29,15 +31,15 @@ class ReadingStreakManager: ObservableObject {
 
     /// Call when a user reads an article.
     func recordRead() {
-        totalArticlesRead += 1
-
         let today = Calendar.current.startOfDay(for: Date())
 
         if let lastDate = lastReadDate {
             let lastDay = Calendar.current.startOfDay(for: lastDate)
 
             if lastDay == today {
-                // Already read today — no streak change
+                // Already read today — just bump the count, no streak change
+                totalArticlesRead += 1
+                persistTotal()
                 return
             }
 
@@ -54,6 +56,7 @@ class ReadingStreakManager: ObservableObject {
             currentStreak = 1
         }
 
+        totalArticlesRead += 1
         lastReadDate = Date()
         if currentStreak > longestStreak {
             longestStreak = currentStreak
@@ -102,12 +105,21 @@ class ReadingStreakManager: ObservableObject {
         let longest = longestStreak
         let total = totalArticlesRead
         let lastDate = lastReadDate
-        DispatchQueue.global(qos: .utility).async { [weak self] in
-            guard let self = self else { return }
-            self.defaults.set(streak, forKey: self.streakKey)
-            self.defaults.set(longest, forKey: self.longestStreakKey)
-            self.defaults.set(total, forKey: self.totalArticlesKey)
-            self.defaults.set(lastDate, forKey: self.lastReadDateKey)
+        let keys = (streakKey, longestStreakKey, totalArticlesKey, lastReadDateKey)
+        persistQueue.async {
+            UserDefaults.standard.set(streak, forKey: keys.0)
+            UserDefaults.standard.set(longest, forKey: keys.1)
+            UserDefaults.standard.set(total, forKey: keys.2)
+            UserDefaults.standard.set(lastDate, forKey: keys.3)
+        }
+    }
+
+    /// Lightweight persist for same-day reads — only updates the article count.
+    private func persistTotal() {
+        let total = totalArticlesRead
+        let key = totalArticlesKey
+        persistQueue.async {
+            UserDefaults.standard.set(total, forKey: key)
         }
     }
 }

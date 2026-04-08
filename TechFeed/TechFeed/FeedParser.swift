@@ -67,9 +67,11 @@ class FeedParser: ObservableObject {
                 self.items = final
                 self.isLoading = false
                 self.fetchMissingImages()
-                // Heavy I/O work — keep off main thread
+                // Snapshot bookmarked URLs on main thread (BookmarkManager isn't thread-safe),
+                // then dispatch heavy I/O to background
+                let bookmarkedSnapshot = BookmarkManager.shared.bookmarkedURLs
                 DispatchQueue.global(qos: .utility).async {
-                    OfflineCacheManager.shared.cacheBookmarkedArticles(from: final)
+                    OfflineCacheManager.shared.cacheBookmarkedArticles(from: final, bookmarkedURLs: bookmarkedSnapshot)
                     OfflineCacheManager.shared.pruneOldCache()
                 }
                 for pending in self.pendingContinuations { pending.resume() }
@@ -157,9 +159,10 @@ class FeedParser: ObservableObject {
                 self.items = final
                 self.isLoading = false
                 self.fetchMissingImages()
-                // Heavy I/O work — keep off main thread
+                // Snapshot bookmarked URLs on main thread, dispatch I/O to background
+                let bookmarkedSnapshot = BookmarkManager.shared.bookmarkedURLs
                 DispatchQueue.global(qos: .utility).async {
-                    OfflineCacheManager.shared.cacheBookmarkedArticles(from: final)
+                    OfflineCacheManager.shared.cacheBookmarkedArticles(from: final, bookmarkedURLs: bookmarkedSnapshot)
                     OfflineCacheManager.shared.pruneOldCache()
                 }
                 continuation.resume()
@@ -177,7 +180,8 @@ class FeedParser: ObservableObject {
         let missing = items.filter { $0.imageURL == nil }
         guard !missing.isEmpty else { return }
 
-        for item in missing {
+        // Limit to 20 requests to avoid flooding the network
+        for item in missing.prefix(20) {
             let itemID = item.id
             let articleURL = item.url
             var request = URLRequest(url: articleURL)
@@ -876,8 +880,8 @@ extension String {
             for match in matches {
                 guard let codeRange = Range(match.range(at: 1), in: result),
                       let code = UInt32(result[codeRange]),
-                      let scalar = Unicode.Scalar(code) else { continue }
-                let fullRange = Range(match.range(at: 0), in: result)!
+                      let scalar = Unicode.Scalar(code),
+                      let fullRange = Range(match.range(at: 0), in: result) else { continue }
                 result.replaceSubrange(fullRange, with: String(scalar))
             }
         }
@@ -889,8 +893,8 @@ extension String {
             for match in matches {
                 guard let codeRange = Range(match.range(at: 1), in: result),
                       let code = UInt32(result[codeRange], radix: 16),
-                      let scalar = Unicode.Scalar(code) else { continue }
-                let fullRange = Range(match.range(at: 0), in: result)!
+                      let scalar = Unicode.Scalar(code),
+                      let fullRange = Range(match.range(at: 0), in: result) else { continue }
                 result.replaceSubrange(fullRange, with: String(scalar))
             }
         }

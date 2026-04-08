@@ -5,6 +5,8 @@ class ReadStateManager: ObservableObject {
 
     private let defaults = UserDefaults.standard
     private let readKey = "arca_read_urls"
+    /// Serial queue prevents out-of-order UserDefaults writes.
+    private let persistQueue = DispatchQueue(label: "com.arca.readstate.persist")
 
     @Published var readURLs: Set<String>
     /// Ordered list so we can evict oldest-first (FIFO).
@@ -32,14 +34,10 @@ class ReadStateManager: ObservableObject {
         readOrder.append(url)
         // Write asynchronously — avoid blocking main thread with large array serialization
         let snapshot = readOrder
-        DispatchQueue.global(qos: .utility).async { [weak self] in
-            self?.defaults.set(snapshot, forKey: self?.readKey ?? "")
+        let key = readKey
+        persistQueue.async {
+            UserDefaults.standard.set(snapshot, forKey: key)
         }
-    }
-
-    var unreadCount: Int {
-        // This is a rough count — caller must compare against their item list
-        0
     }
 
     func unreadCount(in items: [FeedItem]) -> Int {

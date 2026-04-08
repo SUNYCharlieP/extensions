@@ -9,6 +9,10 @@ class PreferenceEngine {
     private let totalTapsKey = "pref_total_taps"
     private let likedKey = "pref_liked_urls"
 
+    /// Protects all cached* properties — scoreItems runs on a background thread
+    /// while recordTap/recordLike mutate from the main thread.
+    private let lock = NSLock()
+
     private var cachedSources: [String: Int]
     private var cachedKeywords: [String: Int]
     private var cachedTotalTaps: Int
@@ -41,17 +45,20 @@ class PreferenceEngine {
     }
 
     func recordTap(on item: FeedItem) {
+        lock.lock()
         cachedTotalTaps += 1
         cachedSources[item.source, default: 0] += 1
         for keyword in extractKeywords(from: item.title) {
             cachedKeywords[keyword, default: 0] += 1
         }
+        lock.unlock()
         persistAsync()
     }
 
     func recordLike(on item: FeedItem) {
+        lock.lock()
         let url = item.url.absoluteString
-        guard !cachedLikedURLs.contains(url) else { return }
+        guard !cachedLikedURLs.contains(url) else { lock.unlock(); return }
         cachedLikedURLs.insert(url)
         // 3x weight — a like is a much stronger signal than a tap
         cachedSources[item.source, default: 0] += 3
@@ -59,12 +66,14 @@ class PreferenceEngine {
             cachedKeywords[keyword, default: 0] += 3
         }
         cachedTotalTaps += 3
+        lock.unlock()
         persistAsync()
     }
 
     func removeLike(on item: FeedItem) {
+        lock.lock()
         let url = item.url.absoluteString
-        guard cachedLikedURLs.contains(url) else { return }
+        guard cachedLikedURLs.contains(url) else { lock.unlock(); return }
         cachedLikedURLs.remove(url)
         // Reverse the 3x weight boost from recordLike
         cachedSources[item.source] = max(0, (cachedSources[item.source] ?? 0) - 3)
@@ -72,25 +81,37 @@ class PreferenceEngine {
             cachedKeywords[keyword] = max(0, (cachedKeywords[keyword] ?? 0) - 3)
         }
         cachedTotalTaps = max(0, cachedTotalTaps - 3)
+        lock.unlock()
         persistAsync()
     }
 
     func isLiked(_ item: FeedItem) -> Bool {
-        cachedLikedURLs.contains(item.url.absoluteString)
+        lock.lock()
+        let result = cachedLikedURLs.contains(item.url.absoluteString)
+        lock.unlock()
+        return result
     }
 
     /// Returns 0–1 affinity for a source based on tap history. Used for dedup tie-breaking.
     func sourceAffinity(_ source: String) -> Double {
-        guard let max = cachedSources.values.max(), max > 0 else { return 0 }
-        return Double(cachedSources[source] ?? 0) / Double(max)
+        lock.lock()
+        guard let max = cachedSources.values.max(), max > 0 else { lock.unlock(); return 0 }
+        let result = Double(cachedSources[source] ?? 0) / Double(max)
+        lock.unlock()
+        return result
     }
 
+    /// Serial queue ensures UserDefaults writes don't race each other.
+    private let persistQueue = DispatchQueue(label: "com.arca.preference.persist")
+
     private func persistAsync() {
+        lock.lock()
         let sources = cachedSources
         let keywords = cachedKeywords
         let taps = cachedTotalTaps
         let liked = Array(cachedLikedURLs)
-        DispatchQueue.global(qos: .utility).async { [weak self] in
+        lock.unlock()
+        persistQueue.async { [weak self] in
             guard let self = self else { return }
             self.defaults.set(sources, forKey: self.sourceKey)
             self.defaults.set(keywords, forKey: self.keywordKey)
@@ -100,17 +121,24 @@ class PreferenceEngine {
     }
 
     func scoreItems(_ items: [FeedItem]) -> [FeedItem] {
-        guard cachedTotalTaps >= 3 else {
+        // Snapshot caches under lock — scoreItems runs on a background thread
+        lock.lock()
+        let totalTaps = cachedTotalTaps
+        let sources = cachedSources
+        let keywords = cachedKeywords
+        lock.unlock()
+
+        guard totalTaps >= 3 else {
             return items.sorted { $0.pubDate > $1.pubDate }
         }
 
-        let maxSourceCount = Double(cachedSources.values.max() ?? 1)
-        let maxKeywordCount = Double(cachedKeywords.values.max() ?? 1)
+        let maxSourceCount = Double(sources.values.max() ?? 1)
+        let maxKeywordCount = Double(keywords.values.max() ?? 1)
 
         var scored = items.map { item -> FeedItem in
             var item = item
 
-            let sourceScore = Double(cachedSources[item.source] ?? 0) / maxSourceCount
+            let sourceScore = Double(sources[item.source] ?? 0) / maxSourceCount
 
             let titleKeywords = extractKeywords(from: item.title)
             let keywordScore: Double
@@ -118,7 +146,7 @@ class PreferenceEngine {
                 keywordScore = 0
             } else {
                 let totalRelevance = titleKeywords.reduce(0.0) { sum, kw in
-                    sum + Double(cachedKeywords[kw] ?? 0) / maxKeywordCount
+                    sum + Double(keywords[kw] ?? 0) / maxKeywordCount
                 }
                 keywordScore = totalRelevance / Double(titleKeywords.count)
             }
@@ -126,7 +154,7 @@ class PreferenceEngine {
             let age = Date().timeIntervalSince(item.pubDate)
             let recencyScore = max(0, 1.0 - age / (48 * 3600))
 
-            let prefWeight = min(Double(cachedTotalTaps) / 30.0, 0.4)
+            let prefWeight = min(Double(totalTaps) / 30.0, 0.4)
             let recencyWeight = 1.0 - prefWeight
 
             item.preferenceScore = recencyWeight * recencyScore

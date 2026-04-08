@@ -4,7 +4,7 @@ struct FeedItem: Identifiable, Equatable {
     var id: String { url.absoluteString }
 
     static func == (lhs: FeedItem, rhs: FeedItem) -> Bool {
-        lhs.url == rhs.url
+        lhs.url == rhs.url && lhs.imageURL == rhs.imageURL
     }
     let title: String
     let itemDescription: String

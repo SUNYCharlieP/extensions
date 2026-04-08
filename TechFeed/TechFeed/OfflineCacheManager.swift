@@ -54,8 +54,10 @@ class OfflineCacheManager {
     }
 
     /// Cache bookmarked articles for offline access.
-    func cacheBookmarkedArticles(from items: [FeedItem]) {
-        let bookmarked = items.filter { BookmarkManager.shared.isBookmarked($0) }
+    /// `bookmarkedURLs` must be passed in — callers should snapshot it on the main thread
+    /// before dispatching to a background queue, since BookmarkManager is not thread-safe.
+    func cacheBookmarkedArticles(from items: [FeedItem], bookmarkedURLs: Set<String>) {
+        let bookmarked = items.filter { bookmarkedURLs.contains($0.url.absoluteString) }
         for item in bookmarked {
             cacheArticle(item)
         }
@@ -82,7 +84,7 @@ class OfflineCacheManager {
         if didPrune {
             trackingQueue.async {
                 let surviving = self._trackedURLs.filter { urlString in
-                    guard let url = URL(string: urlString) else { return false }
+                    guard URL(string: urlString) != nil else { return false }
                     let data = Data(urlString.utf8)
                     let hash = SHA256.hash(data: data)
                     let key = hash.prefix(20).map { String(format: "%02x", $0) }.joined() + ".html"

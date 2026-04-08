@@ -5,6 +5,8 @@ class BookmarkManager: ObservableObject {
 
     private let defaults = UserDefaults.standard
     private let bookmarkKey = "arca_bookmarks"
+    /// Serial queue prevents out-of-order UserDefaults writes.
+    private let persistQueue = DispatchQueue(label: "com.arca.bookmarks.persist")
 
     @Published var bookmarkedURLs: Set<String>
 
@@ -24,8 +26,10 @@ class BookmarkManager: ObservableObject {
             bookmarkedURLs.insert(url)
         }
         let snapshot = Array(bookmarkedURLs)
-        DispatchQueue.global(qos: .utility).async { [weak self] in
-            self?.defaults.set(snapshot, forKey: self?.bookmarkKey ?? "")
+        let key = bookmarkKey
+        persistQueue.async { [weak self] in
+            guard self != nil else { return }
+            UserDefaults.standard.set(snapshot, forKey: key)
         }
     }
 

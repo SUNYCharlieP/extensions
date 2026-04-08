@@ -5,8 +5,8 @@ import WebKit
 
 struct ContentView: View {
     @StateObject private var parser = FeedParser()
-    @StateObject private var bookmarks = BookmarkManager.shared
-    @StateObject private var sourceManager = SourceManager.shared
+    @ObservedObject private var bookmarks = BookmarkManager.shared
+    @ObservedObject private var sourceManager = SourceManager.shared
     @State private var selectedTab = 0
     @State private var showOnboarding = false
     @State private var showLaunch = true
