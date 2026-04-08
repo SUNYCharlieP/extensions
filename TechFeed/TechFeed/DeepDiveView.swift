@@ -52,7 +52,7 @@ struct DeepDiveView: View {
                                     .background(Color.arcaOrange)
                                     .clipShape(Capsule())
 
-                                Text(article.pubDate, style: .relative)
+                                Text(article.pubDate.relativeString)
                                     .font(.caption2)
                                     .foregroundColor(.secondary)
 

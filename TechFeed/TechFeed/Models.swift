@@ -58,6 +58,24 @@ struct FeedItem: Identifiable, Equatable {
     ]
 }
 
+// MARK: - Relative Time Formatting
+
+extension Date {
+    /// "2m ago", "3h ago", "1d ago" — never shows seconds.
+    var relativeString: String {
+        let seconds = Int(Date().timeIntervalSince(self))
+        if seconds < 60 { return "just now" }
+        let minutes = seconds / 60
+        if minutes < 60 { return "\(minutes)m ago" }
+        let hours = minutes / 60
+        if hours < 24 { return "\(hours)h ago" }
+        let days = hours / 24
+        if days < 7 { return "\(days)d ago" }
+        let weeks = days / 7
+        return "\(weeks)w ago"
+    }
+}
+
 struct RSSFeed {
     let name: String
     let url: String

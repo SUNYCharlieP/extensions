@@ -554,7 +554,7 @@ struct SavedArticleRow: View {
                     .lineLimit(2)
 
                 HStack(spacing: 8) {
-                    Text(relativeTime(item.pubDate))
+                    Text(item.pubDate.relativeString)
                         .font(.caption2)
                         .foregroundColor(.secondary)
 
@@ -927,7 +927,7 @@ struct VideoCardView: View {
                         .font(.caption)
                         .foregroundColor(.secondary)
 
-                    Text(relativeTime(item.pubDate))
+                    Text(item.pubDate.relativeString)
                         .font(.caption)
                         .foregroundColor(.secondary)
 
@@ -966,22 +966,6 @@ struct VideoCardView: View {
         .background(Color(.secondarySystemGroupedBackground))
         .clipShape(RoundedRectangle(cornerRadius: 16))
     }
-}
-
-// MARK: - Relative Time (no seconds)
-
-/// "2m ago", "3h ago", "1d ago" — never shows seconds.
-private func relativeTime(_ date: Date) -> String {
-    let seconds = Int(Date().timeIntervalSince(date))
-    if seconds < 60 { return "just now" }
-    let minutes = seconds / 60
-    if minutes < 60 { return "\(minutes)m ago" }
-    let hours = minutes / 60
-    if hours < 24 { return "\(hours)h ago" }
-    let days = hours / 24
-    if days < 7 { return "\(days)d ago" }
-    let weeks = days / 7
-    return "\(weeks)w ago"
 }
 
 // MARK: - Brand Colors
@@ -1440,7 +1424,7 @@ struct StoryCardView: View {
                         .font(.caption)
                         .foregroundColor(.secondary)
 
-                    Text(relativeTime(item.pubDate))
+                    Text(item.pubDate.relativeString)
                         .font(.caption)
                         .foregroundColor(.secondary)
 
@@ -1668,7 +1652,7 @@ struct MediumCardView: View {
                     Text("·")
                         .font(.caption2)
                         .foregroundColor(.secondary)
-                    Text(relativeTime(item.pubDate))
+                    Text(item.pubDate.relativeString)
                         .font(.caption2)
                         .foregroundColor(.secondary)
                 }
@@ -1732,7 +1716,7 @@ struct CompactVideoCard: View {
                     Text("·")
                         .font(.caption2)
                         .foregroundColor(.secondary)
-                    Text(relativeTime(item.pubDate))
+                    Text(item.pubDate.relativeString)
                         .font(.caption2)
                         .foregroundColor(.secondary)
                 }
@@ -1763,7 +1747,7 @@ struct WideRowView: View {
                     .lineLimit(3)
                     .fixedSize(horizontal: false, vertical: true)
 
-                Text(relativeTime(item.pubDate))
+                Text(item.pubDate.relativeString)
                     .font(.caption2)
                     .foregroundColor(.secondary)
             }
