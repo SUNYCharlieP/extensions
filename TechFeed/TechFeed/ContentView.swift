@@ -208,21 +208,28 @@ struct FeedTab: View {
         return items
     }
 
-    private var qualityItems: [FeedItem] {
-        // When the user picks "Videos" or "Shorts" category, don't filter out videos
-        if selectedCategory == "Videos" || selectedCategory == "Shorts" {
-            return filteredItems.filter { $0.hasQualityImage || $0.isVideo }
-        }
-        return filteredItems.filter { $0.hasQualityImage && !$0.isVideo }
-    }
+    // qualityItems is now computed inline in feedContent to avoid redundant recomputation
 
     private var feedContent: some View {
-        ScrollView {
+        // Compute filtered/quality items ONCE per body evaluation
+        let filtered = filteredItems
+        let quality: [FeedItem] = {
+            if selectedCategory == "Videos" || selectedCategory == "Shorts" {
+                return filtered.filter { $0.hasQualityImage || $0.isVideo }
+            }
+            return filtered.filter { $0.hasQualityImage && !$0.isVideo }
+        }()
+        let videos = filtered.filter { $0.isVideo && !$0.isShort }.prefix(6)
+        let briefingItems = Array(quality.prefix(5))
+        let briefingShown = briefingItems.count >= 3
+        let skipCount = briefingShown ? briefingItems.count : 0
+        let top = Array(quality.dropFirst(skipCount).prefix(3))
+        let remaining = Array(quality.dropFirst(skipCount + top.count).prefix(12))
+
+        return ScrollView {
             LazyVStack(spacing: 0) {
-                // Gradient header
                 arcaHeader
 
-                // Branded refresh indicator
                 if parser.isLoading && !parser.items.isEmpty {
                     ArcaRefreshIndicator(reduceMotion: reduceMotion)
                         .transition(.opacity)
@@ -248,13 +255,10 @@ struct FeedTab: View {
                 .padding(.horizontal)
                 .padding(.top, 8)
 
-                // Category pills
                 categoryBar
                     .padding(.top, 4)
 
                 // ── Smart Briefing ──
-                let briefingItems = Array(qualityItems.prefix(5))
-                let briefingShown = briefingItems.count >= 3
                 if briefingShown {
                     BriefingCardView(items: briefingItems, subtitle: currentMood.briefingSubtitle, onTap: { item in
                         tapAction(item)
@@ -263,9 +267,7 @@ struct FeedTab: View {
                         .padding(.top, 16)
                 }
 
-                // ── Tier 1: Top 3 big stories with More Coverage ──
-                let skipCount = briefingShown ? briefingItems.count : 0
-                let top = Array(qualityItems.dropFirst(skipCount).prefix(3))
+                // ── Tier 1: Top 3 big stories ──
                 if !top.isEmpty {
                     feedSection(title: currentMood.sectionTitle) {
                         VStack(spacing: 16) {
@@ -302,7 +304,6 @@ struct FeedTab: View {
                 }
 
                 // ── Video picks ──
-                let videos = filteredItems.filter { $0.isVideo && !$0.isShort }.prefix(6)
                 if !videos.isEmpty {
                     feedSection(title: "Tech Videos") {
                         ScrollView(.horizontal, showsIndicators: false) {
@@ -319,8 +320,7 @@ struct FeedTab: View {
                     .padding(.top, 20)
                 }
 
-                // ── Tier 2: Mixed layout — varied card sizes ──
-                let remaining = Array(qualityItems.dropFirst(skipCount + top.count).prefix(12))
+                // ── Tier 2: Mixed layout ──
                 if !remaining.isEmpty {
                     mixedLayoutSection(items: remaining)
                         .padding(.top, 24)
@@ -528,14 +528,8 @@ struct SavedArticleRow: View {
             Color(.tertiarySystemGroupedBackground)
                 .frame(width: 80, height: 80)
                 .overlay(
-                    AsyncImage(url: item.imageURL) { phase in
-                        switch phase {
-                        case .success(let image):
-                            image.resizable().scaledToFill()
-                        default:
-                            EmptyView()
-                        }
-                    }
+                    CachedAsyncImage(url: item.imageURL)
+                        .scaledToFill()
                 )
                 .clipShape(RoundedRectangle(cornerRadius: 10))
 
@@ -719,14 +713,9 @@ private struct ShortPlayerPage: View {
                     .ignoresSafeArea()
             } else if let videoID = videoID {
                 // Inactive — show thumbnail as placeholder
-                AsyncImage(url: URL(string: "https://img.youtube.com/vi/\(videoID)/maxresdefault.jpg")) { phase in
-                    if let image = phase.image {
-                        image.resizable().scaledToFill()
-                    } else {
-                        Color.black
-                    }
-                }
-                .ignoresSafeArea()
+                CachedAsyncImage(url: URL(string: "https://img.youtube.com/vi/\(videoID)/maxresdefault.jpg"))
+                    .scaledToFill()
+                    .ignoresSafeArea()
             }
 
             // Bottom overlay: title + source + actions
@@ -927,16 +916,8 @@ struct VideoCardView: View {
                 Color(.tertiarySystemGroupedBackground)
                     .frame(height: 200)
                     .overlay(
-                        AsyncImage(url: youtubeThumbURL ?? item.imageURL) { phase in
-                            switch phase {
-                            case .success(let image):
-                                image.resizable().scaledToFill()
-                            case .empty:
-                                ProgressView().tint(.arcaOrange)
-                            default:
-                                EmptyView()
-                            }
-                        }
+                        CachedAsyncImage(url: youtubeThumbURL ?? item.imageURL)
+                            .scaledToFill()
                     )
                     .clipped()
 
@@ -1411,16 +1392,8 @@ struct StoryCardView: View {
             Color(.tertiarySystemGroupedBackground)
                 .frame(height: 200)
                 .overlay(
-                    AsyncImage(url: item.imageURL) { phase in
-                        switch phase {
-                        case .success(let image):
-                            image.resizable().scaledToFill()
-                        case .empty:
-                            ProgressView().tint(.arcaOrange)
-                        default:
-                            EmptyView()
-                        }
-                    }
+                    CachedAsyncImage(url: item.imageURL)
+                        .scaledToFill()
                 )
                 .clipped()
 
@@ -1662,14 +1635,8 @@ struct MediumCardView: View {
             Color(.tertiarySystemGroupedBackground)
                 .frame(height: 110)
                 .overlay(
-                    AsyncImage(url: item.imageURL) { phase in
-                        switch phase {
-                        case .success(let image):
-                            image.resizable().scaledToFill()
-                        default:
-                            EmptyView()
-                        }
-                    }
+                    CachedAsyncImage(url: item.imageURL)
+                        .scaledToFill()
                 )
                 .clipped()
 
@@ -1721,14 +1688,8 @@ struct CompactVideoCard: View {
                 Color(.tertiarySystemGroupedBackground)
                     .frame(height: 146)
                     .overlay(
-                        AsyncImage(url: youtubeThumbURL ?? item.imageURL) { phase in
-                            switch phase {
-                            case .success(let image):
-                                image.resizable().scaledToFill()
-                            default:
-                                EmptyView()
-                            }
-                        }
+                        CachedAsyncImage(url: youtubeThumbURL ?? item.imageURL)
+                            .scaledToFill()
                     )
                     .clipped()
 
@@ -1801,14 +1762,8 @@ struct WideRowView: View {
             Color(.tertiarySystemGroupedBackground)
                 .frame(width: 120, height: 90)
                 .overlay(
-                    AsyncImage(url: item.imageURL) { phase in
-                        switch phase {
-                        case .success(let image):
-                            image.resizable().scaledToFill()
-                        default:
-                            EmptyView()
-                        }
-                    }
+                    CachedAsyncImage(url: item.imageURL)
+                        .scaledToFill()
                 )
                 .clipShape(RoundedRectangle(cornerRadius: 10))
         }

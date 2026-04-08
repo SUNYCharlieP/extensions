@@ -44,9 +44,9 @@ class FeedParser: ObservableObject {
             }.resume()
         }
 
-        group.notify(queue: .main) { [weak self] in
+        // Process on background thread — dedup is O(n²) and shouldn't block UI
+        group.notify(queue: .global(qos: .userInitiated)) { [weak self] in
             guard let self = self else { return }
-            // Copy under lock to prevent race with in-flight URLSession callbacks
             self.lock.lock()
             let snapshot = collectedItems
             self.lock.unlock()
@@ -55,20 +55,29 @@ class FeedParser: ObservableObject {
             let deduped = Self.deduplicate(categorized, preferences: self.preferences)
             let scored = self.preferences.scoreItems(deduped)
             let diverse = Self.diversify(scored)
-            self.items = Self.promoteHero(diverse)
-            self.isLoading = false
-            self.fetchMissingImages()
-            NotificationManager.shared.checkForBreakingStories(self.items)
-            OfflineCacheManager.shared.cacheBookmarkedArticles(from: self.items)
-            OfflineCacheManager.shared.pruneOldCache()
-            Self.updateWidgetData(self.items)
-            // Resume any async callers that were waiting
-            for pending in self.pendingContinuations { pending.resume() }
-            self.pendingContinuations.removeAll()
-            // If another fetch was requested while we were loading, start it now
-            if self.needsRefresh {
-                self.needsRefresh = false
-                self.fetchAllFeeds()
+            var final = Self.promoteHero(diverse)
+            // Precompute derived properties once (isTrending, readingTime, hasQualityImage)
+            for i in final.indices { final[i].computeDerivedProperties() }
+
+            // Widget data & notifications can be prepared off main thread
+            Self.updateWidgetData(final)
+            NotificationManager.shared.checkForBreakingStories(final)
+
+            DispatchQueue.main.async {
+                self.items = final
+                self.isLoading = false
+                self.fetchMissingImages()
+                // Heavy I/O work — keep off main thread
+                DispatchQueue.global(qos: .utility).async {
+                    OfflineCacheManager.shared.cacheBookmarkedArticles(from: final)
+                    OfflineCacheManager.shared.pruneOldCache()
+                }
+                for pending in self.pendingContinuations { pending.resume() }
+                self.pendingContinuations.removeAll()
+                if self.needsRefresh {
+                    self.needsRefresh = false
+                    self.fetchAllFeeds()
+                }
             }
         }
     }
@@ -124,7 +133,7 @@ class FeedParser: ObservableObject {
             }.resume()
         }
 
-        group.notify(queue: .main) { [weak self] in
+        group.notify(queue: .global(qos: .userInitiated)) { [weak self] in
             guard let self = self else {
                 continuation.resume()
                 return
@@ -137,19 +146,29 @@ class FeedParser: ObservableObject {
             let deduped = Self.deduplicate(categorized, preferences: self.preferences)
             let scored = self.preferences.scoreItems(deduped)
             let diverse = Self.diversify(scored)
-            self.items = Self.promoteHero(diverse)
-            self.isLoading = false
-            self.fetchMissingImages()
-            NotificationManager.shared.checkForBreakingStories(self.items)
-            OfflineCacheManager.shared.cacheBookmarkedArticles(from: self.items)
-            OfflineCacheManager.shared.pruneOldCache()
-            Self.updateWidgetData(self.items)
-            continuation.resume()
-            for pending in self.pendingContinuations { pending.resume() }
-            self.pendingContinuations.removeAll()
-            if self.needsRefresh {
-                self.needsRefresh = false
-                self.fetchAllFeeds()
+            var final = Self.promoteHero(diverse)
+            for i in final.indices { final[i].computeDerivedProperties() }
+
+            // Widget data & notifications can be prepared off main thread
+            Self.updateWidgetData(final)
+            NotificationManager.shared.checkForBreakingStories(final)
+
+            DispatchQueue.main.async {
+                self.items = final
+                self.isLoading = false
+                self.fetchMissingImages()
+                // Heavy I/O work — keep off main thread
+                DispatchQueue.global(qos: .utility).async {
+                    OfflineCacheManager.shared.cacheBookmarkedArticles(from: final)
+                    OfflineCacheManager.shared.pruneOldCache()
+                }
+                continuation.resume()
+                for pending in self.pendingContinuations { pending.resume() }
+                self.pendingContinuations.removeAll()
+                if self.needsRefresh {
+                    self.needsRefresh = false
+                    self.fetchAllFeeds()
+                }
             }
         }
     }
@@ -571,12 +590,16 @@ class FeedParser: ObservableObject {
         return nil
     }
 
+    // Pre-compiled dimension regexes — avoids recompilation per image tag
+    private static let widthRegex = try? NSRegularExpression(pattern: "width\\s*=\\s*[\"']?(\\d+)", options: .caseInsensitive)
+    private static let heightRegex = try? NSRegularExpression(pattern: "height\\s*=\\s*[\"']?(\\d+)", options: .caseInsensitive)
+
     /// Extracts a numeric dimension from an img tag attribute (e.g., width="120" or width: 120px)
     private static func extractDimension(_ attr: String, from tag: String) -> Int? {
-        // Check attribute: width="120"
-        let attrPattern = "\(attr)\\s*=\\s*[\"']?(\\d+)"
-        if let regex = try? NSRegularExpression(pattern: attrPattern, options: .caseInsensitive),
-           let match = regex.firstMatch(in: tag, range: NSRange(tag.startIndex..., in: tag)),
+        let regex = attr == "width" ? widthRegex : heightRegex
+        guard let regex = regex else { return nil }
+        let range = NSRange(tag.startIndex..., in: tag)
+        if let match = regex.firstMatch(in: tag, range: range),
            let numRange = Range(match.range(at: 1), in: tag),
            let num = Int(tag[numRange]) {
             return num
@@ -818,7 +841,8 @@ private enum DateParsing {
 // MARK: - HTML Stripping
 
 extension String {
-    // Pre-compiled regex — avoids recompilation on every feed item
+    // Pre-compiled regexes — avoids recompilation on every feed item
+    private static let htmlTagRegex = try? NSRegularExpression(pattern: "<[^>]+>")
     private static let decimalEntityRegex = try? NSRegularExpression(pattern: "&#(\\d+);")
     private static let hexEntityRegex = try? NSRegularExpression(pattern: "&#x([0-9a-fA-F]+);")
 
@@ -833,7 +857,13 @@ extension String {
     ]
 
     func strippingHTMLTags() -> String {
-        var result = self.replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
+        var result: String
+        if let regex = Self.htmlTagRegex {
+            let range = NSRange(self.startIndex..., in: self)
+            result = regex.stringByReplacingMatches(in: self, range: range, withTemplate: "")
+        } else {
+            result = self.replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
+        }
 
         for (entity, replacement) in Self.namedEntities {
             result = result.replacingOccurrences(of: entity, with: replacement)

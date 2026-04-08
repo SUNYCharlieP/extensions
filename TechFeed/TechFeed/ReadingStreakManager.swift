@@ -9,10 +9,12 @@ class ReadingStreakManager: ObservableObject {
     private let longestStreakKey = "arca_longest_streak"
     private let totalArticlesKey = "arca_total_articles_read"
 
+    /// Only currentStreak is @Published — it's the only value read in view bodies.
+    /// longestStreak/totalArticlesRead are only shown in settings, read on demand.
     @Published var currentStreak: Int
-    @Published var longestStreak: Int
-    @Published var totalArticlesRead: Int
-    @Published var lastReadDate: Date?
+    var longestStreak: Int
+    var totalArticlesRead: Int
+    var lastReadDate: Date?
 
     private init() {
         currentStreak = defaults.integer(forKey: streakKey)
@@ -28,7 +30,6 @@ class ReadingStreakManager: ObservableObject {
     /// Call when a user reads an article.
     func recordRead() {
         totalArticlesRead += 1
-        defaults.set(totalArticlesRead, forKey: totalArticlesKey)
 
         let today = Calendar.current.startOfDay(for: Date())
 
@@ -97,10 +98,17 @@ class ReadingStreakManager: ObservableObject {
     }
 
     private func persist() {
-        defaults.set(currentStreak, forKey: streakKey)
-        defaults.set(longestStreak, forKey: longestStreakKey)
-        defaults.set(totalArticlesRead, forKey: totalArticlesKey)
-        defaults.set(lastReadDate, forKey: lastReadDateKey)
+        let streak = currentStreak
+        let longest = longestStreak
+        let total = totalArticlesRead
+        let lastDate = lastReadDate
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            guard let self = self else { return }
+            self.defaults.set(streak, forKey: self.streakKey)
+            self.defaults.set(longest, forKey: self.longestStreakKey)
+            self.defaults.set(total, forKey: self.totalArticlesKey)
+            self.defaults.set(lastDate, forKey: self.lastReadDateKey)
+        }
     }
 }
 

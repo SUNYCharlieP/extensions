@@ -23,7 +23,10 @@ class BookmarkManager: ObservableObject {
         } else {
             bookmarkedURLs.insert(url)
         }
-        defaults.set(Array(bookmarkedURLs), forKey: bookmarkKey)
+        let snapshot = Array(bookmarkedURLs)
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            self?.defaults.set(snapshot, forKey: self?.bookmarkKey ?? "")
+        }
     }
 
     /// Merge bookmarks from cloud sync without bypassing persistence.

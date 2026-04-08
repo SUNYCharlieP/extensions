@@ -30,7 +30,11 @@ class ReadStateManager: ObservableObject {
         }
         readURLs.insert(url)
         readOrder.append(url)
-        defaults.set(readOrder, forKey: readKey)
+        // Write asynchronously — avoid blocking main thread with large array serialization
+        let snapshot = readOrder
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            self?.defaults.set(snapshot, forKey: self?.readKey ?? "")
+        }
     }
 
     var unreadCount: Int {

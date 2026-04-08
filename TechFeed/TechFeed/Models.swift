@@ -19,40 +19,43 @@ struct FeedItem: Identifiable, Equatable {
     /// Other sources covering the same story (populated by dedup grouping).
     var relatedArticles: [FeedItem] = []
 
-    /// Whether this story is trending — 3+ sources covering the same topic
-    /// within a 3-hour window signals breaking/hot news.
-    var isTrending: Bool {
-        guard relatedArticles.count >= 2 else { return false }
-        let threeHoursAgo = Date().addingTimeInterval(-3 * 3600)
-        // At least one related article must be recent
-        let hasRecentCoverage = relatedArticles.contains { $0.pubDate > threeHoursAgo }
-        return hasRecentCoverage || pubDate > threeHoursAgo
-    }
+    // ── Precomputed properties (set once during feed processing) ──
+    var isTrending: Bool = false
+    var readingTime: Int = 2
+    var hasQualityImage: Bool = false
 
     /// Total number of sources covering this story (self + related).
     var sourceCount: Int { 1 + relatedArticles.count }
 
-    /// Estimated reading time in minutes based on description word count.
-    /// Falls back to 2 min when description is too short to estimate.
-    var readingTime: Int {
+    /// Recompute cached properties. Called once after dedup/scoring, not on every access.
+    mutating func computeDerivedProperties() {
+        // Reading time
         let words = itemDescription.split(separator: " ").count
-        let minutes = max(1, words / 200) // ~200 wpm reading speed
-        return words < 30 ? 2 : minutes
+        let minutes = max(1, words / 200)
+        readingTime = words < 30 ? 2 : minutes
+
+        // Quality image check
+        if let imgURL = imageURL {
+            let str = imgURL.absoluteString.lowercased()
+            if str.hasPrefix("http") {
+                hasQualityImage = !Self.junkPatterns.contains(where: { str.contains($0) })
+            }
+        }
+
+        // Trending
+        if relatedArticles.count >= 2 {
+            let threeHoursAgo = Date().addingTimeInterval(-3 * 3600)
+            let hasRecentCoverage = relatedArticles.contains { $0.pubDate > threeHoursAgo }
+            isTrending = hasRecentCoverage || pubDate > threeHoursAgo
+        }
     }
 
-    /// Whether the image URL points to a real content image suitable for
-    /// prominent display (hero card, featured grid). Filters out logos,
-    /// icons, tracking pixels, SVGs, GIFs, and other junk.
-    var hasQualityImage: Bool {
-        guard let url = imageURL else { return false }
-        let str = url.absoluteString.lowercased()
-        guard str.hasPrefix("http") else { return false }
-        let junk = ["logo", "icon", "avatar", "favicon", "pixel", "1x1",
-                     "tracking", "spacer", "blank", ".svg", ".gif", "data:",
-                     "gravatar", "sprite", "badge", "emoji", "button",
-                     "placeholder", "default-image", "no-image", "noimage"]
-        return !junk.contains(where: { str.contains($0) })
-    }
+    private static let junkPatterns = [
+        "logo", "icon", "avatar", "favicon", "pixel", "1x1",
+        "tracking", "spacer", "blank", ".svg", ".gif", "data:",
+        "gravatar", "sprite", "badge", "emoji", "button",
+        "placeholder", "default-image", "no-image", "noimage"
+    ]
 }
 
 struct RSSFeed {
