@@ -25,4 +25,12 @@ class BookmarkManager: ObservableObject {
         }
         defaults.set(Array(bookmarkedURLs), forKey: bookmarkKey)
     }
+
+    /// Merge bookmarks from cloud sync without bypassing persistence.
+    func mergeFromCloud(_ urls: Set<String>) {
+        let merged = bookmarkedURLs.union(urls)
+        guard merged != bookmarkedURLs else { return }
+        bookmarkedURLs = merged
+        defaults.set(Array(bookmarkedURLs), forKey: bookmarkKey)
+    }
 }

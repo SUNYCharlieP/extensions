@@ -32,7 +32,12 @@ class NotificationManager {
         content.categoryIdentifier = "BREAKING_STORY"
 
         let trigger = UNTimeIntervalNotificationTrigger(timeInterval: 1, repeats: false)
-        let request = UNNotificationRequest(identifier: "breaking-\(storyKey.hashValue)", content: content, trigger: trigger)
+        // Use the story key directly as identifier (deterministic across launches,
+        // unlike hashValue which is randomized per process).
+        let safeID = String(storyKey.unicodeScalars.filter {
+            CharacterSet.alphanumerics.contains($0) || $0 == "-" || $0 == "_" || $0 == " "
+        }.prefix(60))
+        let request = UNNotificationRequest(identifier: "breaking-\(safeID)", content: content, trigger: trigger)
 
         center.add(request)
     }

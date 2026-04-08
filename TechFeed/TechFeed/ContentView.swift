@@ -1,4 +1,5 @@
 import SwiftUI
+import WebKit
 
 // MARK: - Root Tab View
 
@@ -30,10 +31,10 @@ struct ContentView: View {
                             }
                             .tag(0)
 
-                        VideosTab(parser: parser)
+                        ShortsTab(parser: parser)
                             .tabItem {
-                                Image(systemName: "play.rectangle.fill")
-                                Text("Videos")
+                                Image(systemName: "bolt.circle.fill")
+                                Text("Shorts")
                             }
                             .tag(1)
 
@@ -86,7 +87,7 @@ struct FeedTab: View {
     @Environment(\.horizontalSizeClass) private var sizeClass
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    private let categories = ["Top Picks", "Apple", "General Tech", "Hacker News", "Security", "Science", "Videos"]
+    private let categories = ["Top Picks", "Apple", "General Tech", "Hacker News", "Security", "Science", "Videos", "Shorts"]
 
     private var isIPad: Bool { sizeClass == .regular }
 
@@ -208,7 +209,11 @@ struct FeedTab: View {
     }
 
     private var qualityItems: [FeedItem] {
-        filteredItems.filter { $0.hasQualityImage }
+        // When the user picks "Videos" or "Shorts" category, don't filter out videos
+        if selectedCategory == "Videos" || selectedCategory == "Shorts" {
+            return filteredItems.filter { $0.hasQualityImage || $0.isVideo }
+        }
+        return filteredItems.filter { $0.hasQualityImage && !$0.isVideo }
     }
 
     private var feedContent: some View {
@@ -219,22 +224,8 @@ struct FeedTab: View {
 
                 // Branded refresh indicator
                 if parser.isLoading && !parser.items.isEmpty {
-                    HStack(spacing: 8) {
-                        ArcaArchShape()
-                            .trim(from: 0, to: 0.6)
-                            .stroke(
-                                LinearGradient(colors: [.arcaOrange, .arcaRed], startPoint: .leading, endPoint: .trailing),
-                                style: StrokeStyle(lineWidth: 2.5, lineCap: .round)
-                            )
-                            .frame(width: 18, height: 22)
-                            .rotationEffect(.degrees(reduceMotion ? 0 : 360))
-                            .animation(reduceMotion ? nil : .linear(duration: 1.2).repeatForever(autoreverses: false), value: parser.isLoading)
-                        Text("Refreshing…")
-                            .font(.caption.weight(.medium))
-                            .foregroundColor(.secondary)
-                    }
-                    .padding(.vertical, 8)
-                    .transition(.opacity)
+                    ArcaRefreshIndicator(reduceMotion: reduceMotion)
+                        .transition(.opacity)
                 }
 
                 // Search bar
@@ -263,14 +254,18 @@ struct FeedTab: View {
 
                 // ── Smart Briefing ──
                 let briefingItems = Array(qualityItems.prefix(5))
-                if briefingItems.count >= 3 {
-                    BriefingCardView(items: briefingItems, subtitle: currentMood.briefingSubtitle)
+                let briefingShown = briefingItems.count >= 3
+                if briefingShown {
+                    BriefingCardView(items: briefingItems, subtitle: currentMood.briefingSubtitle, onTap: { item in
+                        tapAction(item)
+                    })
                         .padding(.horizontal)
                         .padding(.top, 16)
                 }
 
                 // ── Tier 1: Top 3 big stories with More Coverage ──
-                let top = Array(qualityItems.prefix(3))
+                let skipCount = briefingShown ? briefingItems.count : 0
+                let top = Array(qualityItems.dropFirst(skipCount).prefix(3))
                 if !top.isEmpty {
                     feedSection(title: currentMood.sectionTitle) {
                         VStack(spacing: 16) {
@@ -306,8 +301,26 @@ struct FeedTab: View {
                     .padding(.top, 16)
                 }
 
+                // ── Video picks ──
+                let videos = filteredItems.filter { $0.isVideo && !$0.isShort }.prefix(6)
+                if !videos.isEmpty {
+                    feedSection(title: "Tech Videos") {
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: 14) {
+                                ForEach(Array(videos)) { item in
+                                    CompactVideoCard(item: item)
+                                        .frame(width: 260)
+                                        .onTapGesture { tapAction(item) }
+                                }
+                            }
+                            .padding(.horizontal)
+                        }
+                    }
+                    .padding(.top, 20)
+                }
+
                 // ── Tier 2: Mixed layout — varied card sizes ──
-                let remaining = Array(qualityItems.dropFirst(3).prefix(12))
+                let remaining = Array(qualityItems.dropFirst(skipCount + top.count).prefix(12))
                 if !remaining.isEmpty {
                     mixedLayoutSection(items: remaining)
                         .padding(.top, 24)
@@ -332,7 +345,7 @@ struct FeedTab: View {
             switch self {
             case .pair(let a, let b): return "\(a.id)-\(b.id)"
             case .triple(let a, let b, let c): return "\(a.id)-\(b.id)-\(c.id)"
-            case .wide(let a): return a.id.uuidString
+            case .wide(let a): return a.id
             }
         }
     }
@@ -568,64 +581,300 @@ struct SavedArticleRow: View {
     }
 }
 
-// MARK: - Videos Tab
+// MARK: - Shorts Tab (Full-Screen Vertical Swipe)
 
-struct VideosTab: View {
+struct ShortsTab: View {
     @ObservedObject var parser: FeedParser
-    @State private var selectedItem: FeedItem?
+    @State private var currentIndex = 0
+    @State private var hasTriedRefresh = false
+    /// Track which item IDs we've already recorded taps for this session
+    @State private var recordedIDs: Set<String> = []
 
-    private var videoItems: [FeedItem] {
-        parser.items.filter { $0.isVideo }
+    private var shortItems: [FeedItem] {
+        parser.items.filter { $0.isShort }
     }
 
     var body: some View {
-        NavigationStack {
-            Group {
-                if videoItems.isEmpty {
-                    VStack(spacing: 16) {
-                        Image(systemName: "play.rectangle")
-                            .font(.system(size: 48))
-                            .foregroundColor(.secondary.opacity(0.4))
-                        Text("No videos yet")
-                            .font(.headline)
-                            .foregroundColor(.secondary)
-                        Text("Videos from MKBHD, Linus Tech Tips, Fireship and more will appear here.")
-                            .font(.subheadline)
-                            .foregroundColor(.secondary.opacity(0.7))
-                            .multilineTextAlignment(.center)
-                            .padding(.horizontal, 40)
-                    }
-                } else {
-                    ScrollView {
-                        LazyVStack(spacing: 16) {
-                            ForEach(videoItems) { item in
-                                VideoCardView(item: item)
-                                    .onTapGesture {
-                                        PreferenceEngine.shared.recordTap(on: item)
-                                        ReadingStreakManager.shared.recordRead()
-                                        ReadStateManager.shared.markRead(item)
-                                        selectedItem = item
-                                    }
-                            }
+        ZStack {
+            Color.black.ignoresSafeArea()
+
+            if shortItems.isEmpty {
+                shortsEmptyState
+                    .onAppear {
+                        // If no shorts yet and we haven't tried, trigger a refresh
+                        if !hasTriedRefresh && !parser.isLoading {
+                            hasTriedRefresh = true
+                            parser.fetchAllFeeds()
                         }
-                        .padding()
+                    }
+            } else {
+                // Rotation trick: iOS 16 TabView .page only pages horizontally.
+                // Rotate the TabView -90° and counter-rotate each page +90°.
+                GeometryReader { geo in
+                    TabView(selection: $currentIndex) {
+                        ForEach(Array(shortItems.enumerated()), id: \.element.id) { index, item in
+                            ShortPlayerPage(
+                                item: item,
+                                isActive: index == currentIndex
+                            )
+                            .frame(width: geo.size.width, height: geo.size.height)
+                            .rotationEffect(.degrees(90))
+                            .tag(index)
+                        }
+                    }
+                    .tabViewStyle(.page(indexDisplayMode: .never))
+                    .frame(width: geo.size.height, height: geo.size.width)
+                    .rotationEffect(.degrees(-90))
+                    .frame(width: geo.size.width, height: geo.size.height)
+                }
+                .ignoresSafeArea()
+                // Clamp currentIndex when shortItems array shrinks after refresh
+                .onChange(of: shortItems.count) { newCount in
+                    if newCount > 0, currentIndex >= newCount {
+                        currentIndex = newCount - 1
                     }
                 }
+                .onChange(of: currentIndex) { newIndex in
+                    guard newIndex >= 0, newIndex < shortItems.count else { return }
+                    let item = shortItems[newIndex]
+                    // Only record once per item per session to avoid inflating scores/stats
+                    if !recordedIDs.contains(item.id) {
+                        recordedIDs.insert(item.id)
+                        PreferenceEngine.shared.recordTap(on: item)
+                        ReadingStreakManager.shared.recordRead()
+                    }
+                    ReadStateManager.shared.markRead(item)
+                }
             }
-            .background(Color(.systemGroupedBackground))
-            .navigationTitle("Videos")
-            .fullScreenCover(item: $selectedItem) { item in
-                ArticleReaderView(item: item)
+        }
+    }
+
+    private var shortsEmptyState: some View {
+        VStack(spacing: 16) {
+            if parser.isLoading {
+                ProgressView()
+                    .tint(.white)
+                    .scaleEffect(1.2)
+                Text("Loading shorts...")
+                    .font(.headline)
+                    .foregroundColor(.white.opacity(0.7))
+            } else {
+                Image(systemName: "bolt.circle")
+                    .font(.system(size: 48))
+                    .foregroundColor(.white.opacity(0.3))
+                Text("No shorts yet")
+                    .font(.headline)
+                    .foregroundColor(.white.opacity(0.7))
+                Text("Quick tech clips from TechLinked,\nShortCircuit, and more.")
+                    .font(.subheadline)
+                    .foregroundColor(.white.opacity(0.4))
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 40)
+
+                Button {
+                    parser.fetchAllFeeds()
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "arrow.clockwise")
+                        Text("Refresh")
+                    }
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundColor(.black)
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 10)
+                    .background(Color.arcaOrange)
+                    .clipShape(Capsule())
+                }
+                .padding(.top, 8)
             }
         }
     }
 }
 
+// MARK: - Single Short Page
+
+private struct ShortPlayerPage: View {
+    let item: FeedItem
+    let isActive: Bool
+    @ObservedObject private var bookmarks = BookmarkManager.shared
+
+    private var isBookmarked: Bool { bookmarks.isBookmarked(item) }
+
+    /// Extract YouTube video ID from the item URL.
+    private var videoID: String? {
+        if let components = URLComponents(url: item.url, resolvingAgainstBaseURL: false),
+           let vid = components.queryItems?.first(where: { $0.name == "v" })?.value {
+            return vid
+        }
+        // YouTube RSS links use /watch?v=ID format
+        return nil
+    }
+
+    var body: some View {
+        ZStack {
+            Color.black.ignoresSafeArea()
+
+            if let videoID = videoID, isActive {
+                ShortEmbedWebView(videoID: videoID)
+                    .ignoresSafeArea()
+            } else if let videoID = videoID {
+                // Inactive — show thumbnail as placeholder
+                AsyncImage(url: URL(string: "https://img.youtube.com/vi/\(videoID)/maxresdefault.jpg")) { phase in
+                    if let image = phase.image {
+                        image.resizable().scaledToFill()
+                    } else {
+                        Color.black
+                    }
+                }
+                .ignoresSafeArea()
+            }
+
+            // Bottom overlay: title + source + actions
+            VStack {
+                Spacer()
+
+                HStack(alignment: .bottom, spacing: 16) {
+                    // Text info
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(item.source)
+                            .font(.caption.weight(.bold))
+                            .foregroundColor(.white.opacity(0.7))
+
+                        Text(item.title)
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundColor(.white)
+                            .lineLimit(3)
+                            .multilineTextAlignment(.leading)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                    // Side action buttons
+                    VStack(spacing: 20) {
+                        Button {
+                            bookmarks.toggle(item)
+                        } label: {
+                            VStack(spacing: 4) {
+                                Image(systemName: isBookmarked ? "bookmark.fill" : "bookmark")
+                                    .font(.title3)
+                                Text("Save")
+                                    .font(.system(size: 10))
+                            }
+                            .foregroundColor(.white)
+                        }
+
+                        ShareLink(item: item.url) {
+                            VStack(spacing: 4) {
+                                Image(systemName: "arrowshape.turn.up.right.fill")
+                                    .font(.title3)
+                                Text("Share")
+                                    .font(.system(size: 10))
+                            }
+                            .foregroundColor(.white)
+                        }
+                    }
+                }
+                .padding(.horizontal, 16)
+                .padding(.bottom, 16)
+                .background(
+                    LinearGradient(
+                        colors: [.clear, .black.opacity(0.7), .black.opacity(0.85)],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                    .frame(height: 200)
+                    .allowsHitTesting(false),
+                    alignment: .bottom
+                )
+            }
+        }
+    }
+}
+
+// MARK: - YouTube Embed WebView for Shorts
+
+#if os(iOS)
+private struct ShortEmbedWebView: UIViewRepresentable {
+    let videoID: String
+
+    func makeUIView(context: Context) -> WKWebView {
+        let config = WKWebViewConfiguration()
+        config.allowsInlineMediaPlayback = true
+        config.mediaTypesRequiringUserActionForPlayback = []
+
+        let webView = WKWebView(frame: .zero, configuration: config)
+        webView.isOpaque = false
+        webView.backgroundColor = .black
+        webView.scrollView.backgroundColor = .black
+        webView.scrollView.isScrollEnabled = false
+        webView.scrollView.bounces = false
+        webView.scrollView.contentInsetAdjustmentBehavior = .never
+
+        loadEmbed(in: webView)
+        return webView
+    }
+
+    func updateUIView(_ webView: WKWebView, context: Context) {
+        // Video ID changed — reload
+        if context.coordinator.currentVideoID != videoID {
+            context.coordinator.currentVideoID = videoID
+            loadEmbed(in: webView)
+        }
+    }
+
+    /// Tear down the web content process when SwiftUI removes this view
+    /// to prevent YouTube iframes from accumulating in memory.
+    static func dismantleUIView(_ webView: WKWebView, coordinator: Coordinator) {
+        webView.stopLoading()
+        webView.loadHTMLString("", baseURL: nil)
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(videoID: videoID)
+    }
+
+    private func loadEmbed(in webView: WKWebView) {
+        // Sanitize videoID — only allow alphanumeric, hyphens, and underscores
+        let safeID = String(videoID.unicodeScalars.filter {
+            CharacterSet.alphanumerics.contains($0) || $0 == "-" || $0 == "_"
+        })
+        guard !safeID.isEmpty else { return }
+
+        let html = """
+        <!DOCTYPE html>
+        <html>
+        <head>
+        <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+        <style>
+            * { margin: 0; padding: 0; }
+            html, body { width: 100%; height: 100%; background: #000; overflow: hidden; }
+            iframe { position: absolute; top: 0; left: 0; width: 100%; height: 100%; border: none; }
+        </style>
+        </head>
+        <body>
+        <iframe
+            src="https://www.youtube.com/embed/\(safeID)?autoplay=1&playsinline=1&mute=1&controls=1&rel=0&modestbranding=1&loop=1&playlist=\(safeID)"
+            allow="autoplay; encrypted-media; picture-in-picture"
+            allowfullscreen>
+        </iframe>
+        </body>
+        </html>
+        """
+        webView.loadHTMLString(html, baseURL: URL(string: "https://www.youtube.com"))
+    }
+
+    class Coordinator {
+        var currentVideoID: String
+        init(videoID: String) { self.currentVideoID = videoID }
+    }
+}
+#endif
+
 struct VideoCardView: View {
     let item: FeedItem
     @ObservedObject private var bookmarks = BookmarkManager.shared
+    @ObservedObject private var readState = ReadStateManager.shared
 
-    private var isRead: Bool { ReadStateManager.shared.isRead(item) }
+    private var isRead: Bool { readState.isRead(item) }
     private var isBookmarked: Bool { bookmarks.isBookmarked(item) }
 
     /// Extract YouTube video ID from a youtube.com/watch URL.
@@ -749,6 +998,34 @@ extension ShapeStyle where Self == LinearGradient {
 }
 
 // MARK: - Arca Loading Animation
+
+struct ArcaRefreshIndicator: View {
+    let reduceMotion: Bool
+    @State private var isSpinning = false
+
+    var body: some View {
+        HStack(spacing: 8) {
+            ArcaArchShape()
+                .trim(from: 0, to: 0.6)
+                .stroke(
+                    LinearGradient(colors: [.arcaOrange, .arcaRed], startPoint: .leading, endPoint: .trailing),
+                    style: StrokeStyle(lineWidth: 2.5, lineCap: .round)
+                )
+                .frame(width: 18, height: 22)
+                .rotationEffect(.degrees(isSpinning ? 360 : 0))
+            Text("Refreshing…")
+                .font(.caption.weight(.medium))
+                .foregroundColor(.secondary)
+        }
+        .padding(.vertical, 8)
+        .onAppear {
+            guard !reduceMotion else { return }
+            withAnimation(.linear(duration: 1.2).repeatForever(autoreverses: false)) {
+                isSpinning = true
+            }
+        }
+    }
+}
 
 struct ArcaLoadingView: View {
     @State private var phase: CGFloat = 0
@@ -942,6 +1219,8 @@ struct ArcaLogoView: View {
 struct BriefingCardView: View {
     let items: [FeedItem]
     var subtitle: String = "Your daily briefing"
+    var onTap: ((FeedItem) -> Void)? = nil
+    @ObservedObject private var streak = ReadingStreakManager.shared
 
     private var greeting: String {
         let hour = Calendar.current.component(.hour, from: Date())
@@ -991,6 +1270,9 @@ struct BriefingCardView: View {
             // Summary bullets
             VStack(alignment: .leading, spacing: 10) {
                 ForEach(Array(items.prefix(5).enumerated()), id: \.element.id) { idx, item in
+                    Button {
+                        onTap?(item)
+                    } label: {
                     HStack(alignment: .top, spacing: 10) {
                         Text("\(idx + 1)")
                             .font(.caption.weight(.heavy))
@@ -1024,6 +1306,8 @@ struct BriefingCardView: View {
                             }
                         }
                     }
+                    }
+                    .buttonStyle(.plain)
                 }
             }
 
@@ -1043,7 +1327,6 @@ struct BriefingCardView: View {
                 Spacer()
 
                 // Reading streak
-                let streak = ReadingStreakManager.shared
                 if streak.currentStreak > 0 {
                     HStack(spacing: 3) {
                         Image(systemName: streak.streakTier.icon)
@@ -1080,7 +1363,11 @@ struct StoryCardView: View {
     var onDeepDive: (() -> Void)? = nil
     @ObservedObject private var bookmarks = BookmarkManager.shared
     @ObservedObject private var readState = ReadStateManager.shared
-    @State private var isLiked = false
+    /// Synced from PreferenceEngine on every render — not stored as @State
+    /// to avoid stale values when SwiftUI reuses or recreates the view.
+    private var isLiked: Bool { PreferenceEngine.shared.isLiked(item) }
+    /// Local animation trigger for the heart scale effect
+    @State private var heartBounce = false
 
     private var isBookmarked: Bool { bookmarks.isBookmarked(item) }
     private var isRead: Bool { readState.isRead(item) }
@@ -1160,11 +1447,13 @@ struct StoryCardView: View {
                         Button {
                             let impact = UIImpactFeedbackGenerator(style: .light)
                             impact.impactOccurred()
-                            withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) {
-                                isLiked.toggle()
-                            }
                             if isLiked {
+                                PreferenceEngine.shared.removeLike(on: item)
+                            } else {
                                 PreferenceEngine.shared.recordLike(on: item)
+                            }
+                            withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) {
+                                heartBounce.toggle()
                             }
                         } label: {
                             Image(systemName: isLiked ? "heart.fill" : "heart")
@@ -1172,6 +1461,9 @@ struct StoryCardView: View {
                                 .scaleEffect(isLiked ? 1.15 : 1.0)
                         }
                         .buttonStyle(.plain)
+                        // heartBounce forces SwiftUI to re-evaluate this view
+                        // (isLiked reads from non-observable PreferenceEngine)
+                        .id(heartBounce)
 
                         Button {
                             let impact = UIImpactFeedbackGenerator(style: .medium)
@@ -1240,9 +1532,7 @@ struct StoryCardView: View {
         .background(Color(.secondarySystemGroupedBackground))
         .clipShape(RoundedRectangle(cornerRadius: 16))
         .opacity(isRead ? 0.75 : 1.0)
-        .onAppear {
-            isLiked = PreferenceEngine.shared.isLiked(item)
-        }
+        // isLiked is now a computed property — no sync needed
     }
 }
 
@@ -1373,6 +1663,75 @@ struct MediumCardView: View {
             }
             .padding(10)
             .frame(height: 76)
+        }
+        .background(Color(.secondarySystemGroupedBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+    }
+}
+
+// MARK: - Compact Video Card (horizontal scroll in feed)
+
+struct CompactVideoCard: View {
+    let item: FeedItem
+
+    private var youtubeThumbURL: URL? {
+        if let components = URLComponents(url: item.url, resolvingAgainstBaseURL: false),
+           let videoID = components.queryItems?.first(where: { $0.name == "v" })?.value {
+            return URL(string: "https://img.youtube.com/vi/\(videoID)/maxresdefault.jpg")
+        }
+        return nil
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ZStack {
+                Color(.tertiarySystemGroupedBackground)
+                    .frame(height: 146)
+                    .overlay(
+                        AsyncImage(url: youtubeThumbURL ?? item.imageURL) { phase in
+                            switch phase {
+                            case .success(let image):
+                                image.resizable().scaledToFill()
+                            default:
+                                EmptyView()
+                            }
+                        }
+                    )
+                    .clipped()
+
+                Circle()
+                    .fill(.black.opacity(0.5))
+                    .frame(width: 40, height: 40)
+                    .overlay(
+                        Image(systemName: "play.fill")
+                            .font(.caption)
+                            .foregroundColor(.white)
+                            .offset(x: 1)
+                    )
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(item.title)
+                    .font(.caption.weight(.semibold))
+                    .foregroundColor(.primary)
+                    .lineLimit(2)
+
+                HStack(spacing: 4) {
+                    Image(systemName: "play.rectangle.fill")
+                        .font(.system(size: 8))
+                        .foregroundColor(.arcaOrange)
+                    Text(item.source)
+                        .font(.caption2.weight(.medium))
+                        .foregroundColor(.arcaOrange)
+                    Text("·")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                    Text(item.pubDate, style: .relative)
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
+            }
+            .padding(10)
         }
         .background(Color(.secondarySystemGroupedBackground))
         .clipShape(RoundedRectangle(cornerRadius: 12))

@@ -1,7 +1,11 @@
 import Foundation
 
-struct FeedItem: Identifiable {
-    let id = UUID()
+struct FeedItem: Identifiable, Equatable {
+    var id: String { url.absoluteString }
+
+    static func == (lhs: FeedItem, rhs: FeedItem) -> Bool {
+        lhs.url == rhs.url
+    }
     let title: String
     let itemDescription: String
     let url: URL
@@ -11,6 +15,7 @@ struct FeedItem: Identifiable {
     let pubDate: Date
     var preferenceScore: Double = 0
     var isVideo: Bool = false
+    var isShort: Bool = false
     /// Other sources covering the same story (populated by dedup grouping).
     var relatedArticles: [FeedItem] = []
 
@@ -55,6 +60,7 @@ struct RSSFeed {
     let url: String
     let category: String
     var isVideo: Bool = false
+    var isShort: Bool = false
 
     static let allFeeds: [RSSFeed] = [
         // Apple
@@ -79,5 +85,20 @@ struct RSSFeed {
         RSSFeed(name: "The Verge (Video)", url: "https://www.youtube.com/feeds/videos.xml?channel_id=UCddiUEpeqJcYeBxX1IVBKvQ", category: "Videos", isVideo: true),
         RSSFeed(name: "Fireship", url: "https://www.youtube.com/feeds/videos.xml?channel_id=UCsBjURrPoezykLs9EqgamOA", category: "Videos", isVideo: true),
         RSSFeed(name: "Dave Lee", url: "https://www.youtube.com/feeds/videos.xml?channel_id=UCVYamHKEnwaVx3zv4BNiRDA", category: "Videos", isVideo: true),
+        // News-focused tech video channels
+        RSSFeed(name: "CNET", url: "https://www.youtube.com/feeds/videos.xml?channel_id=UCXFNrRMSNPH4F1Ib5GNjSMA", category: "Videos", isVideo: true),
+        RSSFeed(name: "Wired (Video)", url: "https://www.youtube.com/feeds/videos.xml?channel_id=UCftwRNsjfRo08xYE31tkiyw", category: "Videos", isVideo: true),
+        RSSFeed(name: "Wall Street Journal Tech", url: "https://www.youtube.com/feeds/videos.xml?channel_id=UCK7tptUDHh-RYDsdxO1-5QQ", category: "Videos", isVideo: true),
+        RSSFeed(name: "Bloomberg Technology", url: "https://www.youtube.com/feeds/videos.xml?channel_id=UCrM7B7SL_g1edFOnmj-SDKg", category: "Videos", isVideo: true),
+        RSSFeed(name: "CNBC TechCheck", url: "https://www.youtube.com/feeds/videos.xml?channel_id=UCvJJ_dzjViJCoLf5uKUTwoA", category: "Videos", isVideo: true),
+        RSSFeed(name: "Tom's Guide", url: "https://www.youtube.com/feeds/videos.xml?channel_id=UC-yzLkKRIHKzMRiPCnqmMdA", category: "Videos", isVideo: true),
+        RSSFeed(name: "Austin Evans", url: "https://www.youtube.com/feeds/videos.xml?channel_id=UCXGgrKt94gR6lmN4aN3mYTg", category: "Videos", isVideo: true),
+        // Shorts — channels that primarily post short-form tech content
+        RSSFeed(name: "TechLinked", url: "https://www.youtube.com/feeds/videos.xml?channel_id=UCeeFfhMcJa1kjtfZAGskOCA", category: "Shorts", isVideo: true, isShort: true),
+        RSSFeed(name: "ShortCircuit", url: "https://www.youtube.com/feeds/videos.xml?channel_id=UCdBK94H6oZT2Q7l0-b0xmMg", category: "Shorts", isVideo: true, isShort: true),
+        RSSFeed(name: "JerryRigEverything", url: "https://www.youtube.com/feeds/videos.xml?channel_id=UCWFKCr40YwOZQx8FHU_ZqqQ", category: "Shorts", isVideo: true, isShort: true),
+        RSSFeed(name: "Mrwhosetheboss", url: "https://www.youtube.com/feeds/videos.xml?channel_id=UCMiJRAwDNSNzuYeN2uWa0pA", category: "Shorts", isVideo: true, isShort: true),
+        RSSFeed(name: "Unbox Therapy", url: "https://www.youtube.com/feeds/videos.xml?channel_id=UCsTcErHg8oDvUnTzoqsYeNw", category: "Shorts", isVideo: true, isShort: true),
+        RSSFeed(name: "iJustine", url: "https://www.youtube.com/feeds/videos.xml?channel_id=UCey_c7U86mJGz1VJWH5CYPA", category: "Shorts", isVideo: true, isShort: true),
     ]
 }

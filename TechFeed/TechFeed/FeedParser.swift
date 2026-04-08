@@ -6,6 +6,10 @@ class FeedParser: ObservableObject {
 
     private let lock = NSLock()
     private let preferences = PreferenceEngine.shared
+    /// Continuations waiting for the current fetch to finish.
+    private var pendingContinuations: [CheckedContinuation<Void, Never>] = []
+    /// When true, a new fetch will start after the current one finishes.
+    private var needsRefresh = false
     private let ogImageSession: URLSession = {
         let config = URLSessionConfiguration.default
         config.httpMaximumConnectionsPerHost = 6
@@ -14,7 +18,10 @@ class FeedParser: ObservableObject {
     }()
 
     func fetchAllFeeds() {
-        guard !isLoading else { return }
+        guard !isLoading else {
+            needsRefresh = true
+            return
+        }
         isLoading = true
         var collectedItems: [FeedItem] = []
         let group = DispatchGroup()
@@ -26,7 +33,7 @@ class FeedParser: ObservableObject {
                 defer { group.leave() }
                 guard let self = self, let data = data, error == nil else { return }
 
-                let delegate = FeedXMLParserDelegate(sourceName: feed.name, category: feed.category, isVideo: feed.isVideo)
+                let delegate = FeedXMLParserDelegate(sourceName: feed.name, category: feed.category, isVideo: feed.isVideo, isShort: feed.isShort)
                 let parser = XMLParser(data: data)
                 parser.delegate = delegate
                 parser.parse()
@@ -55,6 +62,14 @@ class FeedParser: ObservableObject {
             OfflineCacheManager.shared.cacheBookmarkedArticles(from: self.items)
             OfflineCacheManager.shared.pruneOldCache()
             Self.updateWidgetData(self.items)
+            // Resume any async callers that were waiting
+            for pending in self.pendingContinuations { pending.resume() }
+            self.pendingContinuations.removeAll()
+            // If another fetch was requested while we were loading, start it now
+            if self.needsRefresh {
+                self.needsRefresh = false
+                self.fetchAllFeeds()
+            }
         }
     }
 
@@ -73,52 +88,68 @@ class FeedParser: ObservableObject {
 
     func fetchAllFeedsAsync() async {
         await withCheckedContinuation { continuation in
-            guard !isLoading else {
+            // Ensure all state access is on main thread
+            let work = { [self] in
+                guard !self.isLoading else {
+                    self.needsRefresh = true
+                    self.pendingContinuations.append(continuation)
+                    return
+                }
+                self.isLoading = true
+                self.startFetch(continuation: continuation)
+            }
+            if Thread.isMainThread { work() } else { DispatchQueue.main.async { work() } }
+        }
+    }
+
+    private func startFetch(continuation: CheckedContinuation<Void, Never>) {
+        var collectedItems: [FeedItem] = []
+        let group = DispatchGroup()
+
+        for feed in SourceManager.shared.enabledFeeds {
+            guard let url = URL(string: feed.url) else { continue }
+            group.enter()
+            URLSession.shared.dataTask(with: url) { [weak self] data, _, error in
+                defer { group.leave() }
+                guard let self = self, let data = data, error == nil else { return }
+
+                let delegate = FeedXMLParserDelegate(sourceName: feed.name, category: feed.category, isVideo: feed.isVideo, isShort: feed.isShort)
+                let parser = XMLParser(data: data)
+                parser.delegate = delegate
+                parser.parse()
+
+                self.lock.lock()
+                collectedItems.append(contentsOf: delegate.items)
+                self.lock.unlock()
+            }.resume()
+        }
+
+        group.notify(queue: .main) { [weak self] in
+            guard let self = self else {
                 continuation.resume()
                 return
             }
-            isLoading = true
-            var collectedItems: [FeedItem] = []
-            let group = DispatchGroup()
-
-            for feed in SourceManager.shared.enabledFeeds {
-                guard let url = URL(string: feed.url) else { continue }
-                group.enter()
-                URLSession.shared.dataTask(with: url) { [weak self] data, _, error in
-                    defer { group.leave() }
-                    guard let self = self, let data = data, error == nil else { return }
-
-                    let delegate = FeedXMLParserDelegate(sourceName: feed.name, category: feed.category, isVideo: feed.isVideo)
-                    let parser = XMLParser(data: data)
-                    parser.delegate = delegate
-                    parser.parse()
-
-                    self.lock.lock()
-                    collectedItems.append(contentsOf: delegate.items)
-                    self.lock.unlock()
-                }.resume()
-            }
-
-            group.notify(queue: .main) { [weak self] in
-                guard let self = self else {
-                    continuation.resume()
-                    return
-                }
-                // Copy under lock to prevent race with in-flight URLSession callbacks
-                self.lock.lock()
-                let snapshot = collectedItems
-                self.lock.unlock()
-                let filtered = snapshot.filter { !Self.isPromo($0) }
-                let categorized = Self.categorize(filtered)
-                let deduped = Self.deduplicate(categorized, preferences: self.preferences)
-                let scored = self.preferences.scoreItems(deduped)
-                let diverse = Self.diversify(scored)
-                self.items = Self.promoteHero(diverse)
-                self.isLoading = false
-                self.fetchMissingImages()
-                NotificationManager.shared.checkForBreakingStories(self.items)
-                OfflineCacheManager.shared.cacheBookmarkedArticles(from: self.items)
-                continuation.resume()
+            self.lock.lock()
+            let snapshot = collectedItems
+            self.lock.unlock()
+            let filtered = snapshot.filter { !Self.isPromo($0) }
+            let categorized = Self.categorize(filtered)
+            let deduped = Self.deduplicate(categorized, preferences: self.preferences)
+            let scored = self.preferences.scoreItems(deduped)
+            let diverse = Self.diversify(scored)
+            self.items = Self.promoteHero(diverse)
+            self.isLoading = false
+            self.fetchMissingImages()
+            NotificationManager.shared.checkForBreakingStories(self.items)
+            OfflineCacheManager.shared.cacheBookmarkedArticles(from: self.items)
+            OfflineCacheManager.shared.pruneOldCache()
+            Self.updateWidgetData(self.items)
+            continuation.resume()
+            for pending in self.pendingContinuations { pending.resume() }
+            self.pendingContinuations.removeAll()
+            if self.needsRefresh {
+                self.needsRefresh = false
+                self.fetchAllFeeds()
             }
         }
     }
@@ -135,7 +166,7 @@ class FeedParser: ObservableObject {
 
             ogImageSession.dataTask(with: request) { [weak self] data, _, _ in
                 guard let data = data,
-                      let html = String(data: data.prefix(150_000), encoding: .utf8) else { return }
+                      let html = String(data: data, encoding: .utf8).map({ String($0.prefix(150_000)) }) else { return }
 
                 guard let imageStr = Self.extractBestImage(from: html, pageURL: articleURL),
                       let imageURL = URL(string: imageStr) else { return }
@@ -224,14 +255,14 @@ class FeedParser: ObservableObject {
             }
 
             // Pick the best: preferred source → has image → newest
-            let bestIdx = group.max { a, b in
+            guard let bestIdx = group.max(by: { a, b in
                 let itemA = items[a]
                 let itemB = items[b]
                 let scoreA = preferences.sourceAffinity(itemA.source) + (itemA.imageURL != nil ? 0.5 : 0)
                 let scoreB = preferences.sourceAffinity(itemB.source) + (itemB.imageURL != nil ? 0.5 : 0)
                 if abs(scoreA - scoreB) > 0.01 { return scoreA < scoreB }
                 return itemA.pubDate < itemB.pubDate
-            }!
+            }) else { continue }
 
             // Attach other sources as "More Coverage" on the winning item
             var bestItem = items[bestIdx]
@@ -298,7 +329,7 @@ class FeedParser: ObservableObject {
             if abs(scoreA - scoreB) < 0.001 {
                 // Tie-break with slight randomization based on time so feed feels fresh
                 let slot = Int(Date().timeIntervalSince1970) / 3600
-                return a.hashValue ^ slot < b.hashValue ^ slot
+                return (a.hashValue ^ slot) < (b.hashValue ^ slot)
             }
             return scoreA > scoreB
         }
@@ -564,6 +595,7 @@ private class FeedXMLParserDelegate: NSObject, XMLParserDelegate {
     let sourceName: String
     let category: String
     let isVideo: Bool
+    let isShort: Bool
     var items: [FeedItem] = []
 
     private var feedFormat: FeedFormat = .unknown
@@ -575,11 +607,13 @@ private class FeedXMLParserDelegate: NSObject, XMLParserDelegate {
     private var currentPubDate = ""
     private var currentImageURL = ""
     private var currentContentEncoded = ""
+    private var currentVideoId = ""
 
-    init(sourceName: String, category: String, isVideo: Bool = false) {
+    init(sourceName: String, category: String, isVideo: Bool = false, isShort: Bool = false) {
         self.sourceName = sourceName
         self.category = category
         self.isVideo = isVideo
+        self.isShort = isShort
         super.init()
     }
 
@@ -600,10 +634,26 @@ private class FeedXMLParserDelegate: NSObject, XMLParserDelegate {
             currentPubDate = ""
             currentImageURL = ""
             currentContentEncoded = ""
+            currentVideoId = ""
         }
 
         if isInsideItem {
-            currentElement = elementName
+            // Only update currentElement for tags we actually collect text from.
+            // This prevents nested child elements (e.g., <div> inside <summary>)
+            // from overwriting currentElement, which would cause text after
+            // the child's close tag to be dropped.
+            let trackedElements: Set<String> = [
+                "title", "description", "summary", "content", "encoded",
+                "link", "pubDate", "published", "updated", "videoId",
+            ]
+            if trackedElements.contains(elementName) {
+                currentElement = elementName
+            }
+
+            // Reset date when a higher-priority date element starts (prevents concatenation)
+            if elementName == "pubDate" || elementName == "published" {
+                currentPubDate = ""
+            }
 
             if feedFormat == .atom && elementName == "link" {
                 if let href = attributeDict["href"] {
@@ -614,8 +664,15 @@ private class FeedXMLParserDelegate: NSObject, XMLParserDelegate {
                 }
             }
 
-            if qualified == "media:content" || qualified == "media:thumbnail" {
-                if let url = attributeDict["url"], currentImageURL.isEmpty {
+            if qualified == "media:thumbnail" {
+                // Prefer media:thumbnail — it's always an image
+                if let url = attributeDict["url"] {
+                    currentImageURL = url
+                }
+            } else if qualified == "media:content" {
+                // Only use media:content if its type is an image (YouTube's is application/x-shockwave-flash)
+                if let type = attributeDict["type"], type.hasPrefix("image"),
+                   let url = attributeDict["url"], currentImageURL.isEmpty {
                     currentImageURL = url
                 }
             }
@@ -634,12 +691,12 @@ private class FeedXMLParserDelegate: NSObject, XMLParserDelegate {
         switch currentElement {
         case "title": currentTitle += string
         case "description", "summary", "content": currentDescription += string
-        case "encoded": currentContentEncoded += string
+        case "encoded", "content:encoded": currentContentEncoded += string
         case "link": currentLink += string
         case "pubDate", "published", "updated":
-            if currentPubDate.isEmpty || currentElement == "published" || currentElement == "pubDate" {
-                currentPubDate += string
-            }
+            currentPubDate += string
+        case "yt:videoId", "videoId":
+            currentVideoId += string
         default: break
         }
     }
@@ -669,7 +726,18 @@ private class FeedXMLParserDelegate: NSObject, XMLParserDelegate {
             guard !title.isEmpty, let url = URL(string: link) else { return }
 
             let pubDate = DateParsing.parseDate(currentPubDate.trimmingCharacters(in: .whitespacesAndNewlines))
-            let imageURL = imageURLString.isEmpty ? nil : URL(string: imageURLString)
+            var imageURL = imageURLString.isEmpty ? nil : URL(string: imageURLString)
+
+            // Auto-extract YouTube thumbnails for video feeds
+            if isVideo, imageURL == nil {
+                let videoID = currentVideoId.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !videoID.isEmpty {
+                    imageURL = URL(string: "https://img.youtube.com/vi/\(videoID)/maxresdefault.jpg")
+                } else if let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+                          let vid = components.queryItems?.first(where: { $0.name == "v" })?.value {
+                    imageURL = URL(string: "https://img.youtube.com/vi/\(vid)/maxresdefault.jpg")
+                }
+            }
 
             var item = FeedItem(
                 title: title,
@@ -681,10 +749,11 @@ private class FeedXMLParserDelegate: NSObject, XMLParserDelegate {
                 pubDate: pubDate
             )
             item.isVideo = isVideo
+            item.isShort = isShort
             items.append(item)
         }
 
-        if isInsideItem {
+        if isInsideItem && elementName == currentElement {
             currentElement = ""
         }
     }
@@ -749,18 +818,53 @@ private enum DateParsing {
 // MARK: - HTML Stripping
 
 extension String {
+    // Pre-compiled regex — avoids recompilation on every feed item
+    private static let decimalEntityRegex = try? NSRegularExpression(pattern: "&#(\\d+);")
+    private static let hexEntityRegex = try? NSRegularExpression(pattern: "&#x([0-9a-fA-F]+);")
+
+    private static let namedEntities: [(String, String)] = [
+        ("&amp;", "&"), ("&lt;", "<"), ("&gt;", ">"),
+        ("&quot;", "\""), ("&apos;", "'"), ("&nbsp;", " "),
+        ("&mdash;", "\u{2014}"), ("&ndash;", "\u{2013}"),
+        ("&lsquo;", "\u{2018}"), ("&rsquo;", "\u{2019}"),
+        ("&ldquo;", "\u{201C}"), ("&rdquo;", "\u{201D}"),
+        ("&hellip;", "\u{2026}"), ("&trade;", "\u{2122}"),
+        ("&copy;", "\u{00A9}"), ("&reg;", "\u{00AE}"),
+    ]
+
     func strippingHTMLTags() -> String {
-        let stripped = self.replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
-        return stripped
-            .replacingOccurrences(of: "&amp;", with: "&")
-            .replacingOccurrences(of: "&lt;", with: "<")
-            .replacingOccurrences(of: "&gt;", with: ">")
-            .replacingOccurrences(of: "&quot;", with: "\"")
-            .replacingOccurrences(of: "&#39;", with: "'")
-            .replacingOccurrences(of: "&nbsp;", with: " ")
-            .replacingOccurrences(of: "&#8217;", with: "'")
-            .replacingOccurrences(of: "&#8220;", with: "\u{201C}")
-            .replacingOccurrences(of: "&#8221;", with: "\u{201D}")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        var result = self.replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
+
+        for (entity, replacement) in Self.namedEntities {
+            result = result.replacingOccurrences(of: entity, with: replacement)
+        }
+
+        // Decode numeric decimal entities: &#8217; &#160; etc.
+        if let decRegex = Self.decimalEntityRegex {
+            let nsRange = NSRange(result.startIndex..., in: result)
+            let matches = decRegex.matches(in: result, range: nsRange).reversed()
+            for match in matches {
+                guard let codeRange = Range(match.range(at: 1), in: result),
+                      let code = UInt32(result[codeRange]),
+                      let scalar = Unicode.Scalar(code) else { continue }
+                let fullRange = Range(match.range(at: 0), in: result)!
+                result.replaceSubrange(fullRange, with: String(scalar))
+            }
+        }
+
+        // Decode numeric hex entities: &#x27; &#x2F; etc.
+        if let hexRegex = Self.hexEntityRegex {
+            let nsRange = NSRange(result.startIndex..., in: result)
+            let matches = hexRegex.matches(in: result, range: nsRange).reversed()
+            for match in matches {
+                guard let codeRange = Range(match.range(at: 1), in: result),
+                      let code = UInt32(result[codeRange], radix: 16),
+                      let scalar = Unicode.Scalar(code) else { continue }
+                let fullRange = Range(match.range(at: 0), in: result)!
+                result.replaceSubrange(fullRange, with: String(scalar))
+            }
+        }
+
+        return result.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }

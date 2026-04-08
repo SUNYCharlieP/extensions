@@ -18,7 +18,7 @@ class SourceManager: ObservableObject {
 
         if let data = defaults.data(forKey: customKey),
            let decoded = try? JSONDecoder().decode([CodableFeed].self, from: data) {
-            customFeeds = decoded.map { RSSFeed(name: $0.name, url: $0.url, category: $0.category) }
+            customFeeds = decoded.map { RSSFeed(name: $0.name, url: $0.url, category: $0.category, isVideo: $0.isVideo, isShort: $0.isShort) }
         } else {
             customFeeds = []
         }
@@ -26,7 +26,8 @@ class SourceManager: ObservableObject {
 
     var enabledFeeds: [RSSFeed] {
         let builtIn = RSSFeed.allFeeds.filter { !disabledSources.contains($0.name) }
-        return builtIn + customFeeds
+        let custom = customFeeds.filter { !disabledSources.contains($0.name) }
+        return builtIn + custom
     }
 
     func isEnabled(_ source: String) -> Bool {
@@ -49,8 +50,13 @@ class SourceManager: ObservableObject {
     }
 
     func removeCustomFeed(at index: Int) {
-        guard index < customFeeds.count else { return }
+        guard index >= 0, index < customFeeds.count else { return }
         customFeeds.remove(at: index)
+        persistCustomFeeds()
+    }
+
+    func removeCustomFeed(url: String) {
+        customFeeds.removeAll { $0.url == url }
         persistCustomFeeds()
     }
 
@@ -60,7 +66,7 @@ class SourceManager: ObservableObject {
     }
 
     private func persistCustomFeeds() {
-        let codable = customFeeds.map { CodableFeed(name: $0.name, url: $0.url, category: $0.category) }
+        let codable = customFeeds.map { CodableFeed(name: $0.name, url: $0.url, category: $0.category, isVideo: $0.isVideo, isShort: $0.isShort) }
         if let data = try? JSONEncoder().encode(codable) {
             defaults.set(data, forKey: customKey)
         }
@@ -71,4 +77,23 @@ private struct CodableFeed: Codable {
     let name: String
     let url: String
     let category: String
+    var isVideo: Bool
+    var isShort: Bool
+
+    init(name: String, url: String, category: String, isVideo: Bool = false, isShort: Bool = false) {
+        self.name = name
+        self.url = url
+        self.category = category
+        self.isVideo = isVideo
+        self.isShort = isShort
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        name = try container.decode(String.self, forKey: .name)
+        url = try container.decode(String.self, forKey: .url)
+        category = try container.decode(String.self, forKey: .category)
+        isVideo = try container.decodeIfPresent(Bool.self, forKey: .isVideo) ?? false
+        isShort = try container.decodeIfPresent(Bool.self, forKey: .isShort) ?? false
+    }
 }

@@ -3,7 +3,7 @@ import SwiftUI
 struct OnboardingView: View {
     @ObservedObject private var sourceManager = SourceManager.shared
     @State private var currentPage = 0
-    @State private var selectedCategories: Set<String> = ["Apple", "General Tech", "Hacker News", "Security", "Science"]
+    @State private var selectedCategories: Set<String> = ["Apple", "General Tech", "Hacker News", "Security", "Science", "Videos", "Shorts"]
     var onComplete: () -> Void
 
     private let categories: [(name: String, icon: String, description: String)] = [
@@ -12,6 +12,8 @@ struct OnboardingView: View {
         ("Hacker News", "terminal", "Developer community picks"),
         ("Security", "lock.shield", "Cybersecurity & threats"),
         ("Science", "atom", "Research & space"),
+        ("Videos", "play.rectangle.fill", "MKBHD, Linus Tech Tips, CNET, Bloomberg"),
+        ("Shorts", "bolt.circle.fill", "Quick tech clips under 60 seconds"),
     ]
 
     var body: some View {
@@ -47,11 +49,16 @@ struct OnboardingView: View {
                     Button {
                         if currentPage < 2 {
                             currentPage += 1
+                        } else if selectedCategories.isEmpty {
+                            // Require at least one category
                         } else {
-                            // Apply category selections
-                            for cat in ["Apple", "General Tech", "Hacker News", "Security", "Science"] {
-                                if !selectedCategories.contains(cat) {
-                                    for feed in RSSFeed.allFeeds where feed.category == cat {
+                            // Apply category selections — explicitly enable/disable
+                            let allCats = categories.map { $0.name }
+                            for cat in allCats {
+                                let shouldEnable = selectedCategories.contains(cat)
+                                for feed in RSSFeed.allFeeds where feed.category == cat {
+                                    let isCurrentlyEnabled = sourceManager.isEnabled(feed.name)
+                                    if shouldEnable != isCurrentlyEnabled {
                                         sourceManager.toggle(feed.name)
                                     }
                                 }
@@ -60,12 +67,12 @@ struct OnboardingView: View {
                             onComplete()
                         }
                     } label: {
-                        Text(currentPage < 2 ? "Continue" : "Start Reading")
+                        Text(currentPage < 2 ? "Continue" : (selectedCategories.isEmpty ? "Pick at least one" : "Start Reading"))
                             .font(.headline)
                             .foregroundColor(.white)
                             .frame(maxWidth: .infinity)
                             .padding(.vertical, 16)
-                            .background(Color.arcaGradient)
+                            .background(currentPage == 2 && selectedCategories.isEmpty ? AnyShapeStyle(Color.gray) : AnyShapeStyle(Color.arcaGradient))
                             .clipShape(RoundedRectangle(cornerRadius: 14))
                     }
                     .padding(.horizontal, 24)

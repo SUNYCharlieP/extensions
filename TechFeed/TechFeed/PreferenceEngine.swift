@@ -62,6 +62,19 @@ class PreferenceEngine {
         persistAsync()
     }
 
+    func removeLike(on item: FeedItem) {
+        let url = item.url.absoluteString
+        guard cachedLikedURLs.contains(url) else { return }
+        cachedLikedURLs.remove(url)
+        // Reverse the 3x weight boost from recordLike
+        cachedSources[item.source] = max(0, (cachedSources[item.source] ?? 0) - 3)
+        for keyword in extractKeywords(from: item.title) {
+            cachedKeywords[keyword] = max(0, (cachedKeywords[keyword] ?? 0) - 3)
+        }
+        cachedTotalTaps = max(0, cachedTotalTaps - 3)
+        persistAsync()
+    }
+
     func isLiked(_ item: FeedItem) -> Bool {
         cachedLikedURLs.contains(item.url.absoluteString)
     }

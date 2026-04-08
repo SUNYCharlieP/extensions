@@ -17,7 +17,7 @@ struct SettingsView: View {
         for feed in all {
             groups[feed.category, default: []].append(feed)
         }
-        let order = ["Apple", "General Tech", "Hacker News", "Security", "Science"]
+        let order = ["Apple", "General Tech", "Hacker News", "Security", "Science", "Videos", "Shorts"]
         return order.compactMap { cat in
             guard let feeds = groups[cat] else { return nil }
             return (cat, feeds)
@@ -45,7 +45,11 @@ struct SettingsView: View {
 
                                 Toggle("", isOn: Binding(
                                     get: { sourceManager.isEnabled(feed.name) },
-                                    set: { _ in sourceManager.toggle(feed.name) }
+                                    set: { enabled in
+                                        if enabled != sourceManager.isEnabled(feed.name) {
+                                            sourceManager.toggle(feed.name)
+                                        }
+                                    }
                                 ))
                                 .tint(.arcaOrange)
                             }
@@ -56,7 +60,7 @@ struct SettingsView: View {
                 // Custom feeds
                 if !sourceManager.customFeeds.isEmpty {
                     Section(header: Text("Custom Feeds")) {
-                        ForEach(Array(sourceManager.customFeeds.enumerated()), id: \.offset) { idx, feed in
+                        ForEach(sourceManager.customFeeds, id: \.url) { feed in
                             HStack {
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(feed.name)
@@ -70,7 +74,7 @@ struct SettingsView: View {
                                 Spacer()
 
                                 Button {
-                                    sourceManager.removeCustomFeed(at: idx)
+                                    sourceManager.removeCustomFeed(url: feed.url)
                                 } label: {
                                     Image(systemName: "trash")
                                         .font(.caption)
@@ -135,7 +139,7 @@ struct SettingsView: View {
                         Button {
                             #if os(iOS)
                             if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
-                               let window = windowScene.windows.first {
+                               let window = windowScene.windows.first(where: \.isKeyWindow) ?? windowScene.windows.first {
                                 signInManager.signIn(presenting: window)
                             }
                             #endif

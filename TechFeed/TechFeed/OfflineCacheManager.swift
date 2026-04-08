@@ -1,15 +1,20 @@
 import Foundation
+import CryptoKit
 
 class OfflineCacheManager {
     static let shared = OfflineCacheManager()
 
     private let fileManager = FileManager.default
     private let cacheDir: URL
+    private let trackingQueue = DispatchQueue(label: "com.arca.cache.tracking")
+    /// In-memory copy of tracked URLs — all reads/writes happen on trackingQueue.
+    private var _trackedURLs: Set<String>
 
     private init() {
         let cachesURL = fileManager.urls(for: .cachesDirectory, in: .userDomainMask).first!
         cacheDir = cachesURL.appendingPathComponent("arca_offline", isDirectory: true)
         try? fileManager.createDirectory(at: cacheDir, withIntermediateDirectories: true)
+        _trackedURLs = Set(UserDefaults.standard.stringArray(forKey: "arca_cached_urls") ?? [])
     }
 
     /// Cache article HTML for offline reading.
@@ -26,11 +31,10 @@ class OfflineCacheManager {
             guard let self = self, let data = data, error == nil else { return }
             try? data.write(to: fileURL)
 
-            // Track cached URLs
-            DispatchQueue.main.async {
-                var cached = self.cachedURLs
-                cached.insert(item.url.absoluteString)
-                UserDefaults.standard.set(Array(cached), forKey: "arca_cached_urls")
+            // Track cached URLs — in-memory set prevents read-after-write race
+            self.trackingQueue.async {
+                self._trackedURLs.insert(item.url.absoluteString)
+                UserDefaults.standard.set(Array(self._trackedURLs), forKey: "arca_cached_urls")
             }
         }.resume()
     }
@@ -59,27 +63,40 @@ class OfflineCacheManager {
 
     /// Clear old cache entries (older than 7 days).
     func pruneOldCache() {
-        guard let files = try? fileManager.contentsOfDirectory(at: cacheDir, includingPropertiesForKeys: [.creationDateKey]) else { return }
+        guard let files = try? fileManager.contentsOfDirectory(at: cacheDir, includingPropertiesForKeys: [.contentModificationDateKey]) else { return }
 
         let sevenDaysAgo = Date().addingTimeInterval(-7 * 24 * 3600)
+        var didPrune = false
 
         for file in files {
             guard let attrs = try? fileManager.attributesOfItem(atPath: file.path),
-                  let created = attrs[.creationDate] as? Date,
-                  created < sevenDaysAgo else { continue }
+                  let modified = attrs[.modificationDate] as? Date,
+                  modified < sevenDaysAgo else { continue }
             try? fileManager.removeItem(at: file)
+            didPrune = true
         }
-    }
 
-    private var cachedURLs: Set<String> {
-        Set(UserDefaults.standard.stringArray(forKey: "arca_cached_urls") ?? [])
+        // Sync tracked URLs with actual files on disk.
+        // Can't map hashed filenames back to URLs, so we verify each tracked URL
+        // still has a corresponding file. isCached() is the source of truth.
+        if didPrune {
+            trackingQueue.async {
+                let surviving = self._trackedURLs.filter { urlString in
+                    guard let url = URL(string: urlString) else { return false }
+                    let data = Data(urlString.utf8)
+                    let hash = SHA256.hash(data: data)
+                    let key = hash.prefix(20).map { String(format: "%02x", $0) }.joined() + ".html"
+                    return self.fileManager.fileExists(atPath: self.cacheDir.appendingPathComponent(key).path)
+                }
+                self._trackedURLs = surviving
+                UserDefaults.standard.set(Array(surviving), forKey: "arca_cached_urls")
+            }
+        }
     }
 
     private func cacheKey(for item: FeedItem) -> String {
-        guard let data = item.url.absoluteString.data(using: .utf8) else {
-            return "\(item.url.absoluteString.hashValue).html"
-        }
-        let hash = data.map { String(format: "%02x", $0) }.joined()
-        return String(hash.prefix(40)) + ".html"
+        let data = Data(item.url.absoluteString.utf8)
+        let hash = SHA256.hash(data: data)
+        return hash.prefix(20).map { String(format: "%02x", $0) }.joined() + ".html"
     }
 }

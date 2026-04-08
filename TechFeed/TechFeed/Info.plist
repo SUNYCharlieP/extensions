@@ -7,5 +7,16 @@
         <key>NSAllowsArbitraryLoads</key>
         <true/>
     </dict>
+    <key>CFBundleURLTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleURLSchemes</key>
+            <array>
+                <string>com.charlespiazza.arca</string>
+            </array>
+            <key>CFBundleURLName</key>
+            <string>Google Sign-In Callback</string>
+        </dict>
+    </array>
 </dict>
 </plist>

@@ -28,7 +28,7 @@ class GoogleSignInManager: ObservableObject {
     func signIn(presenting anchor: ASPresentationAnchor) {
         // Google OAuth 2.0 configuration
         // Replace with your actual Google Cloud OAuth client ID
-        let clientID = "YOUR_GOOGLE_CLIENT_ID.apps.googleusercontent.com"
+        let clientID = "117778693877-o0pcj69knqbm19plci51023hqjsrn46r.apps.googleusercontent.com"
         let redirectURI = "com.charlespiazza.arca:/oauth2callback"
         let scope = "openid email profile"
 
@@ -90,12 +90,7 @@ class GoogleSignInManager: ObservableObject {
         guard isSignedIn else { return }
         NSUbiquitousKeyValueStore.default.synchronize()
         if let cloudBookmarks = NSUbiquitousKeyValueStore.default.array(forKey: "arca_cloud_bookmarks") as? [String] {
-            let existing = BookmarkManager.shared.bookmarkedURLs
-            let merged = existing.union(Set(cloudBookmarks))
-            if merged != existing {
-                BookmarkManager.shared.bookmarkedURLs = merged
-                UserDefaults.standard.set(Array(merged), forKey: "arca_bookmarks")
-            }
+            BookmarkManager.shared.mergeFromCloud(Set(cloudBookmarks))
         }
     }
 

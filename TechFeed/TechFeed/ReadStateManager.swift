@@ -7,9 +7,13 @@ class ReadStateManager: ObservableObject {
     private let readKey = "arca_read_urls"
 
     @Published var readURLs: Set<String>
+    /// Ordered list so we can evict oldest-first (FIFO).
+    private var readOrder: [String]
 
     private init() {
-        readURLs = Set(defaults.stringArray(forKey: readKey) ?? [])
+        let stored = defaults.stringArray(forKey: readKey) ?? []
+        readURLs = Set(stored)
+        readOrder = stored
     }
 
     func isRead(_ item: FeedItem) -> Bool {
@@ -19,8 +23,14 @@ class ReadStateManager: ObservableObject {
     func markRead(_ item: FeedItem) {
         let url = item.url.absoluteString
         guard !readURLs.contains(url) else { return }
+        // Cap at 2000 entries — evict oldest first
+        while readURLs.count >= 2000, let oldest = readOrder.first {
+            readOrder.removeFirst()
+            readURLs.remove(oldest)
+        }
         readURLs.insert(url)
-        defaults.set(Array(readURLs), forKey: readKey)
+        readOrder.append(url)
+        defaults.set(readOrder, forKey: readKey)
     }
 
     var unreadCount: Int {
