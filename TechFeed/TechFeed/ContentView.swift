@@ -696,11 +696,17 @@ private struct ShortPlayerPage: View {
 
     /// Extract YouTube video ID from the item URL.
     private var videoID: String? {
+        // /watch?v=VIDEO_ID (standard YouTube URL from RSS)
         if let components = URLComponents(url: item.url, resolvingAgainstBaseURL: false),
            let vid = components.queryItems?.first(where: { $0.name == "v" })?.value {
             return vid
         }
-        // YouTube RSS links use /watch?v=ID format
+        // /shorts/VIDEO_ID (direct shorts URL)
+        let path = item.url.path
+        if path.hasPrefix("/shorts/") {
+            let id = String(path.dropFirst("/shorts/".count))
+            if !id.isEmpty { return id }
+        }
         return nil
     }
 
@@ -779,7 +785,7 @@ private struct ShortPlayerPage: View {
     }
 }
 
-// MARK: - YouTube Embed WebView for Shorts
+// MARK: - YouTube Shorts WebView
 
 #if os(iOS)
 private struct ShortEmbedWebView: UIViewRepresentable {
@@ -790,6 +796,29 @@ private struct ShortEmbedWebView: UIViewRepresentable {
         config.allowsInlineMediaPlayback = true
         config.mediaTypesRequiringUserActionForPlayback = []
 
+        // Inject CSS to hide YouTube chrome and make the player full-screen
+        let css = WKUserScript(source: """
+        (function() {
+            var s = document.createElement('style');
+            s.textContent = `
+                /* Hide YouTube app-level chrome */
+                ytm-mobile-topbar-renderer, #topbar, #header,
+                .mobile-topbar-header, ytm-pivot-bar-renderer,
+                #pivot-bar, .ytm-autonav-bar, ytm-comment-section-renderer,
+                #related, ytm-item-section-renderer,
+                .watch-below-the-player, #secondary,
+                ytm-engagement-panel-section-list-renderer,
+                [class*="branding"], [class*="promo"],
+                ytm-shorts-shelf-renderer { display: none !important; }
+                /* Full-screen the video */
+                body { margin: 0 !important; padding: 0 !important; background: #000 !important; overflow: hidden !important; }
+                .html5-video-player, video { width: 100vw !important; height: 100vh !important; object-fit: contain !important; }
+            `;
+            document.documentElement.appendChild(s);
+        })();
+        """, injectionTime: .atDocumentStart, forMainFrameOnly: false)
+        config.userContentController.addUserScript(css)
+
         let webView = WKWebView(frame: .zero, configuration: config)
         webView.isOpaque = false
         webView.backgroundColor = .black
@@ -798,15 +827,17 @@ private struct ShortEmbedWebView: UIViewRepresentable {
         webView.scrollView.bounces = false
         webView.scrollView.contentInsetAdjustmentBehavior = .never
         webView.navigationDelegate = context.coordinator
+        // Use mobile Safari UA so YouTube serves mobile-friendly page
+        webView.customUserAgent = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
 
-        loadEmbed(in: webView)
+        loadVideo(in: webView)
         return webView
     }
 
     func updateUIView(_ webView: WKWebView, context: Context) {
         if context.coordinator.currentVideoID != videoID {
             context.coordinator.currentVideoID = videoID
-            loadEmbed(in: webView)
+            loadVideo(in: webView)
         }
     }
 
@@ -819,61 +850,17 @@ private struct ShortEmbedWebView: UIViewRepresentable {
         Coordinator(videoID: videoID)
     }
 
-    private func loadEmbed(in webView: WKWebView) {
+    private func loadVideo(in webView: WKWebView) {
         let safeID = String(videoID.unicodeScalars.filter {
             CharacterSet.alphanumerics.contains($0) || $0 == "-" || $0 == "_"
         })
         guard !safeID.isEmpty else { return }
 
-        // Use the YouTube IFrame Player API — lightweight, supports quality
-        // control, and avoids the embed Referer issue (the API script loads
-        // from youtube.com which establishes the connection properly).
-        let html = """
-        <!DOCTYPE html>
-        <html>
-        <head>
-        <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
-        <style>
-            *{margin:0;padding:0}
-            html,body{width:100%;height:100%;background:#000;overflow:hidden}
-            #player{position:absolute;top:0;left:0;width:100%;height:100%}
-        </style>
-        </head>
-        <body>
-        <div id="player"></div>
-        <script>
-            var tag=document.createElement('script');
-            tag.src='https://www.youtube.com/iframe_api';
-            document.head.appendChild(tag);
-            var player;
-            function onYouTubeIframeAPIReady(){
-                player=new YT.Player('player',{
-                    videoId:'\(safeID)',
-                    playerVars:{
-                        autoplay:1,
-                        playsinline:1,
-                        controls:1,
-                        rel:0,
-                        modestbranding:1,
-                        fs:0,
-                        iv_load_policy:3,
-                        loop:1,
-                        playlist:'\(safeID)',
-                        vq:'hd720'
-                    },
-                    events:{
-                        onReady:function(e){
-                            e.target.setPlaybackQuality('hd720');
-                            e.target.playVideo();
-                        }
-                    }
-                });
-            }
-        </script>
-        </body>
-        </html>
-        """
-        webView.loadHTMLString(html, baseURL: URL(string: "https://www.youtube.com/"))
+        // Load the actual YouTube shorts page — no embed restrictions,
+        // proper Referer headers, and YouTube handles playback natively.
+        guard let url = URL(string: "https://m.youtube.com/shorts/\(safeID)") else { return }
+        let request = URLRequest(url: url)
+        webView.load(request)
     }
 
     class Coordinator: NSObject, WKNavigationDelegate {
@@ -883,9 +870,18 @@ private struct ShortEmbedWebView: UIViewRepresentable {
             super.init()
         }
 
-        // Allow the YouTube IFrame API script and embed to load
         func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
-            decisionHandler(.allow)
+            // Allow YouTube navigations, block external links
+            if let url = navigationAction.request.url,
+               let host = url.host?.lowercased(),
+               (host.contains("youtube.com") || host.contains("googlevideo.com") || host.contains("ytimg.com") || host.contains("google.com")) {
+                decisionHandler(.allow)
+            } else if navigationAction.navigationType == .other {
+                // Allow sub-resource loads
+                decisionHandler(.allow)
+            } else {
+                decisionHandler(.cancel)
+            }
         }
     }
 }
@@ -1399,33 +1395,38 @@ struct StoryCardView: View {
 
             // Content
             VStack(alignment: .leading, spacing: 10) {
-                // Badges + source + time
-                HStack(spacing: 6) {
-                    if item.isTrending {
-                        HStack(spacing: 3) {
-                            Image(systemName: "flame.fill")
-                                .font(.caption2)
-                            Text("TRENDING")
-                                .font(.caption2.weight(.heavy))
-                                .tracking(0.3)
-                        }
-                        .foregroundColor(.white)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 3)
-                        .background(Color.arcaRed)
-                        .clipShape(Capsule())
-                    }
-
-                    if item.sourceCount > 1 {
-                        Text("\(item.sourceCount) sources")
-                            .font(.caption2.weight(.semibold))
-                            .foregroundColor(.arcaOrange)
-                            .padding(.horizontal, 7)
+                // Badges row (only if trending or multi-source)
+                if item.isTrending || item.sourceCount > 1 {
+                    HStack(spacing: 6) {
+                        if item.isTrending {
+                            HStack(spacing: 3) {
+                                Image(systemName: "flame.fill")
+                                    .font(.caption2)
+                                Text("TRENDING")
+                                    .font(.caption2.weight(.heavy))
+                                    .tracking(0.3)
+                            }
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 8)
                             .padding(.vertical, 3)
-                            .background(Color.arcaOrange.opacity(0.12))
+                            .background(Color.arcaRed)
                             .clipShape(Capsule())
-                    }
+                        }
 
+                        if item.sourceCount > 1 {
+                            Text("\(item.sourceCount) sources")
+                                .font(.caption2.weight(.semibold))
+                                .foregroundColor(.arcaOrange)
+                                .padding(.horizontal, 7)
+                                .padding(.vertical, 3)
+                                .background(Color.arcaOrange.opacity(0.12))
+                                .clipShape(Capsule())
+                        }
+                    }
+                }
+
+                // Source + time row (separate from badges so it doesn't overflow)
+                HStack(spacing: 6) {
                     Text(item.source)
                         .font(.caption.weight(.bold))
                         .foregroundColor(.arcaOrange)

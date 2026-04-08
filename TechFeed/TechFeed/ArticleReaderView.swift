@@ -78,18 +78,12 @@ struct ArticleReaderView: View {
         VStack(spacing: 20) {
             // Article preview while loading
             if let imageURL = item.imageURL {
-                AsyncImage(url: imageURL) { phase in
-                    if case .success(let image) = phase {
-                        image
-                            .resizable()
-                            .aspectRatio(contentMode: .fill)
-                            .frame(height: 200)
-                            .clipped()
-                            .clipShape(RoundedRectangle(cornerRadius: 12))
-                    }
-                }
-                .frame(height: 200)
-                .padding(.horizontal)
+                CachedAsyncImage(url: imageURL)
+                    .scaledToFill()
+                    .frame(height: 200)
+                    .clipped()
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                    .padding(.horizontal)
             }
 
             VStack(spacing: 12) {
@@ -154,38 +148,37 @@ enum ReaderContentRules {
     }
 
     static func precompile() {
-        let rules: String = {
-            let blockDomains = [
-                "doubleclick\\\\.net", "googlesyndication\\\\.com",
-                "googletagmanager\\\\.com", "google-analytics\\\\.com",
-                "facebook\\\\.net", "amazon-adsystem\\\\.com",
-                "adnxs\\\\.com", "taboola\\\\.com", "outbrain\\\\.com",
-                "quantserve\\\\.com", "scorecardresearch\\\\.com",
-                "chartbeat\\\\.com", "moatads\\\\.com", "criteo\\\\.com",
-                "pubmatic\\\\.com", "rubiconproject\\\\.com",
-                "adsafeprotected\\\\.com", "omtrdc\\\\.net",
-                "adsrvr\\\\.org", "adservice\\\\.google",
-                "pagead2\\\\.googlesyndication\\\\.com",
-                "tpc\\\\.googlesyndication\\\\.com",
-                "ad\\\\.doubleclick\\\\.net",
-                "securepubads\\\\.g\\\\.doubleclick\\\\.net",
-                "contextual\\\\.media\\\\.net",
-                "media\\\\.net", "yimg\\\\.com/cy",
-                "infosys\\\\.com", "topaz\\\\.com",
-                "smartadserver\\\\.com", "openx\\\\.net",
-                "indexexchange\\\\.com", "casalemedia\\\\.com",
-                "bidswitch\\\\.net", "sharethrough\\\\.com",
-                "spotxchange\\\\.com", "mathtag\\\\.com"
-            ]
-            var entries = blockDomains.map {
-                "{\"trigger\":{\"url-filter\":\".*\($0)\"},\"action\":{\"type\":\"block\"}}"
-            }
-            let cssHide = "{\"trigger\":{\"url-filter\":\".*\"},\"action\":{\"type\":\"css-display-none\",\"selector\":\".ad, .ads, .advert, .advertisement, [class*=\\\"ad-\\\"], [class*=\\\"adslot\\\"], [class*=\\\"ad_\\\"], [class*=\\\"adBox\\\"], [class*=\\\"ad-unit\\\"], [id*=\\\"ad-\\\"], [id*=\\\"ad_\\\"], iframe[src*=\\\"ad\\\"], .cookie-banner, .consent-banner, .gdpr, #comments, .disqus, .paywall, .gate, [class*=\\\"promo\\\"], [class*=\\\"sponsor\\\"], [class*=\\\"taboola\\\"], [class*=\\\"outbrain\\\"], [data-ad], [data-advertisement], [data-ad-slot], [class*=\\\"ad-placement\\\"], [class*=\\\"sponsored\\\"], [class*=\\\"Sponsored\\\"], [class*=\\\"partner\\\"], [class*=\\\"Partner\\\"], [class*=\\\"insights\\\"], [aria-label*=\\\"advertisement\\\"], [aria-label*=\\\"Advertisement\\\"]\"}}"
-            entries.append(cssHide)
-            return "[" + entries.joined(separator: ",") + "]"
-        }()
-        // Try cached rules first (instant), then compile as fallback — bump identifier when changing rules
-        WKContentRuleListStore.default().lookUpContentRuleList(forIdentifier: "ReaderRulesV5") { existing, _ in
+        // Only block ad/tracking network domains — don't block anything else.
+        // CSS hiding of page elements is handled separately via injected styles.
+        let blockDomains = [
+            "doubleclick\\\\.net", "googlesyndication\\\\.com",
+            "googletagmanager\\\\.com", "google-analytics\\\\.com",
+            "facebook\\\\.net", "amazon-adsystem\\\\.com",
+            "adnxs\\\\.com", "taboola\\\\.com", "outbrain\\\\.com",
+            "quantserve\\\\.com", "scorecardresearch\\\\.com",
+            "chartbeat\\\\.com", "moatads\\\\.com", "criteo\\\\.com",
+            "pubmatic\\\\.com", "rubiconproject\\\\.com",
+            "adsafeprotected\\\\.com", "omtrdc\\\\.net",
+            "adsrvr\\\\.org", "adservice\\\\.google",
+            "pagead2\\\\.googlesyndication\\\\.com",
+            "tpc\\\\.googlesyndication\\\\.com",
+            "ad\\\\.doubleclick\\\\.net",
+            "securepubads\\\\.g\\\\.doubleclick\\\\.net",
+            "media\\\\.net", "smartadserver\\\\.com", "openx\\\\.net",
+            "bidswitch\\\\.net", "sharethrough\\\\.com",
+            "mathtag\\\\.com"
+        ]
+        var entries = blockDomains.map {
+            "{\"trigger\":{\"url-filter\":\".*\($0)\"},\"action\":{\"type\":\"block\"}}"
+        }
+        // Minimal CSS-display-none for ad containers only — NOT page layout elements
+        let cssHide = """
+        {"trigger":{"url-filter":".*"},"action":{"type":"css-display-none","selector":".ad, .ads, .advert, .advertisement, [class*=\\"adslot\\"], [class*=\\"ad-unit\\"], [class*=\\"ad-wrapper\\"], [class*=\\"ad-container\\"], [data-ad], [data-ad-slot], [data-advertisement], .cookie-banner, .consent-banner, .gdpr, #comments, .disqus, [class*=\\"taboola\\"], [class*=\\"outbrain\\"]"}}
+        """
+        entries.append(cssHide)
+        let rules = "[" + entries.joined(separator: ",") + "]"
+
+        WKContentRuleListStore.default().lookUpContentRuleList(forIdentifier: "ReaderRulesV6") { existing, _ in
             if let existing = existing {
                 lock.lock()
                 _compiled = existing
@@ -193,7 +186,7 @@ enum ReaderContentRules {
                 return
             }
             WKContentRuleListStore.default().compileContentRuleList(
-                forIdentifier: "ReaderRulesV5",
+                forIdentifier: "ReaderRulesV6",
                 encodedContentRuleList: rules
             ) { ruleList, _ in
                 lock.lock()
@@ -210,69 +203,31 @@ struct ReaderWebView: UIViewRepresentable {
     let url: URL
     var onFinished: (() -> Void)?
 
-    // Injected at document START — styles are in place before the page renders,
-    // so there is zero reflow when site content loads.
+    // Lightweight CSS injected at document START.
+    // ONLY does: hide fixed/sticky chrome, basic typography, dark mode.
+    // Does NOT hide broad class patterns that match content containers.
     private static let readerCSS = """
     (function() {
         var style = document.createElement('style');
         style.textContent = `
-            /* ── Hide site chrome ── */
-            /* Top-level structural elements */
-            body > nav, body > header, body > footer, body > aside,
-            body > div > nav, body > div > header, body > div > footer,
-            [role="navigation"], [role="banner"], [role="contentinfo"],
-
-            /* CRITICAL: Hide ALL fixed/sticky positioned elements — these are
-               the nav bars, subscribe bars, and ad banners that overlap content */
+            /* Hide fixed/sticky overlays (nav bars, subscribe bars, cookie banners).
+               Use attribute selectors on inline styles only — these are safe because
+               real article content is never inline position:fixed. */
             [style*="position: fixed"], [style*="position:fixed"],
-            [style*="position: sticky"], [style*="position:sticky"],
-
-            /* Specific class patterns for site UI */
-            [class*="site-nav"], [class*="site-header"], [class*="site-footer"],
-            [class*="global-nav"], [class*="global-header"], [class*="main-nav"],
-            [class*="top-bar"], [class*="topbar"], [class*="masthead"],
-            [class*="sidebar"], [class*="Sidebar"],
-            [class*="trending"], [class*="Trending"],
-            [class*="related-articles"], [class*="RelatedArticles"],
-            [class*="signup"], [class*="SignUp"],
-            [class*="signin"], [class*="SignIn"],
-            [class*="subscribe"], [class*="Subscribe"],
-            [class*="banner"], [class*="Banner"],
-            [class*="toast"], [class*="Toast"],
-            [class*="drawer"], [class*="Drawer"],
-            [class*="modal"], [class*="Modal"],
-            [class*="overlay"], [class*="Overlay"],
-            [class*="popup"], [class*="Popup"],
-            [class*="cookie"], [class*="Cookie"],
-            [class*="consent"], [class*="Consent"],
-            [class*="newsletter"], [class*="Newsletter"],
-            [class*="social-share"], [class*="SocialShare"],
-            [class*="hamburger"], [class*="menu-toggle"],
-            [class*="paywall"], [class*="Paywall"],
-            [class*="promo-bar"], [class*="PromoBar"],
-            [class*="ad-wrapper"], [class*="adWrapper"],
-            [class*="ad-container"], [class*="adContainer"],
-            [class*="advertisement"], [class*="Advertisement"],
-            [class*="leaderboard"], [class*="Leaderboard"],
-            [class*="sticky-nav"], [class*="stickyNav"],
-            [class*="sticky-header"], [class*="stickyHeader"],
-            [class*="fixed-nav"], [class*="fixedNav"],
-            [class*="fixed-header"], [class*="fixedHeader"],
-            [id*="site-nav"], [id*="site-header"], [id*="site-footer"],
-            [id*="sidebar"], [id*="cookie"], [id*="consent"],
-            [id*="banner"], [id*="popup"],
-            [id*="ad-"], [id*="leaderboard"],
-            [data-ad], [data-advertisement], [data-ad-slot] {
+            [style*="position: sticky"], [style*="position:sticky"] {
                 display: none !important;
             }
 
-            /* Force site chrome elements to static — prevents nav bars,
-               subscribe bars, and ad banners from overlapping article content.
-               Only target elements likely to be fixed/sticky chrome, not article layout. */
-            body > header, body > nav, body > footer, body > aside,
-            body > div > header, body > div > nav, body > div > footer,
-            [role="navigation"], [role="banner"], [role="contentinfo"] {
-                position: static !important;
+            /* Specific known site chrome — safe to hide */
+            [role="banner"], [role="navigation"], [role="contentinfo"],
+            .cookie-banner, .consent-banner, .gdpr-banner,
+            [class*="paywall"], [class*="Paywall"],
+            [class*="newsletter"], [class*="Newsletter"],
+            [class*="subscribe-bar"], [class*="SubscribeBar"],
+            [class*="cookie"], [class*="Cookie"],
+            [class*="consent"], [class*="Consent"],
+            #comments, .disqus {
+                display: none !important;
             }
 
             /* ── Base typography ── */
@@ -280,8 +235,6 @@ struct ReaderWebView: UIViewRepresentable {
                 font-family: -apple-system, system-ui, sans-serif !important;
                 font-size: 18px !important;
                 line-height: 1.7 !important;
-                color: #1a1a1a !important;
-                background: #ffffff !important;
                 max-width: 680px !important;
                 margin: 0 auto !important;
                 padding: 20px 16px 60px !important;
@@ -295,62 +248,41 @@ struct ReaderWebView: UIViewRepresentable {
                     color: #f0f0f0 !important;
                     background: #1c1c1e !important;
                 }
-                * {
-                    color: inherit !important;
-                    border-color: #3a3a3c !important;
-                }
-                body div, body section, body article, body main,
-                body span, body p, body li, body td, body th,
-                body figure, body figcaption, body blockquote,
-                body header, body footer, body aside, body nav,
-                body form, body label, body ul, body ol {
-                    background-color: transparent !important;
-                    background-image: none !important;
-                }
                 a { color: #FF854F !important; }
                 h1, h2, h3, h4, h5, h6 { color: #ffffff !important; }
                 img { opacity: 0.92; }
-                pre, code, .highlight {
+                pre, code {
                     background: #2c2c2e !important;
                     color: #e5e5e5 !important;
                 }
-                figcaption, .caption { color: #8e8e93 !important; }
-                blockquote { color: #adadb1 !important; }
-                table, th, td { border-color: #3a3a3c !important; }
-                input, textarea, select, button {
-                    background: #2c2c2e !important;
-                    color: #f0f0f0 !important;
+            }
+
+            /* ── Light mode ── */
+            @media (prefers-color-scheme: light) {
+                body {
+                    color: #1a1a1a !important;
+                    background: #ffffff !important;
                 }
+                a { color: #FF7A3D !important; }
             }
 
             /* ── Images ── */
             img {
                 max-width: 100% !important;
                 height: auto !important;
-                border-radius: 8px !important;
-                margin: 12px 0 !important;
-                display: block !important;
-                position: static !important;
-                float: none !important;
             }
 
             /* ── Headings ── */
             h1, h2, h3 {
                 font-weight: 700 !important;
                 line-height: 1.3 !important;
-                margin-top: 24px !important;
             }
             h1 { font-size: 26px !important; }
             h2 { font-size: 21px !important; }
-            p { margin: 14px 0 !important; }
-            a { color: #FF7A3D !important; }
 
-            /* ── Figures ── */
             figure {
                 margin: 16px 0 !important;
                 padding: 0 !important;
-                position: static !important;
-                overflow: hidden !important;
             }
             figcaption {
                 font-size: 14px !important;
@@ -361,54 +293,45 @@ struct ReaderWebView: UIViewRepresentable {
                 border-left: 3px solid #FF7A3D !important;
                 padding-left: 16px !important;
                 margin: 16px 0 !important;
-                color: #6e6e73 !important;
                 font-style: italic !important;
             }
             iframe, video {
                 max-width: 100% !important;
-                position: static !important;
             }
-            table { font-size: 15px !important; }
 
-            /* ── Code blocks ── */
-            pre, code, .highlight {
-                background: #f5f5f5 !important;
-                overflow-x: auto !important;
-            }
+            /* Remove outlines/focus rings that show as blue lines */
+            *:focus { outline: none !important; }
         `;
         document.documentElement.appendChild(style);
     })();
     """
 
-    // Injected at document END — catches fixed/sticky elements that sites
-    // inject via JavaScript after the initial HTML loads.
+    // Post-load JS: hide fixed/sticky elements that JS inserts after page load
     private static let postLoadCleanup = """
     (function() {
         function killFixed(el) {
+            if (!el || !el.getBoundingClientRect) return;
             var s = window.getComputedStyle(el);
             if (s.position === 'fixed' || s.position === 'sticky') {
                 var rect = el.getBoundingClientRect();
-                // Kill nav bars / banners: short overlays or pinned to top/bottom edges
+                // Only kill elements that look like nav bars / banners
+                // (short height, pinned to top or bottom edge)
                 if (rect.height < 200 || rect.top < 10 || rect.bottom > window.innerHeight - 10) {
-                    el.style.display = 'none';
+                    el.style.setProperty('display', 'none', 'important');
                 }
             }
         }
-        // Targeted scan: only check direct children of body and their children
-        // (where fixed nav/subscribe bars live), NOT the entire DOM.
         function scanTopLevel() {
-            var kids = document.body ? document.body.children : [];
+            if (!document.body) return;
+            var kids = document.body.children;
             for (var i = 0; i < kids.length; i++) {
                 killFixed(kids[i]);
-                var grandkids = kids[i].children;
-                for (var j = 0; j < grandkids.length; j++) {
-                    killFixed(grandkids[j]);
-                }
             }
         }
         scanTopLevel();
-        setTimeout(scanTopLevel, 1500);
-        // Watch for dynamically-inserted fixed elements
+        setTimeout(scanTopLevel, 2000);
+        setTimeout(scanTopLevel, 5000);
+        // Watch for dynamically-inserted fixed elements on body only
         if (window.MutationObserver && document.body) {
             var obs = new MutationObserver(function(mutations) {
                 for (var m = 0; m < mutations.length; m++) {
@@ -419,11 +342,6 @@ struct ReaderWebView: UIViewRepresentable {
                 }
             });
             obs.observe(document.body, { childList: true, subtree: false });
-            // Also observe first-level divs (common wrapper pattern)
-            var topDivs = document.body.querySelectorAll(':scope > div');
-            for (var d = 0; d < topDivs.length; d++) {
-                obs.observe(topDivs[d], { childList: true, subtree: false });
-            }
         }
     })();
     """
@@ -435,10 +353,6 @@ struct ReaderWebView: UIViewRepresentable {
             config.userContentController.add(rules)
         }
 
-        // Inject CSS at document START — before any site content renders.
-        // This is the single most important anti-bounce measure: the browser
-        // only lays out once with our styles already in place, so there is
-        // no reflow flash or content-size oscillation.
         let cssScript = WKUserScript(
             source: Self.readerCSS,
             injectionTime: .atDocumentStart,
@@ -446,7 +360,6 @@ struct ReaderWebView: UIViewRepresentable {
         )
         config.userContentController.addUserScript(cssScript)
 
-        // Post-load cleanup: kill fixed/sticky elements injected by JS after page load
         let cleanupJS = WKUserScript(
             source: Self.postLoadCleanup,
             injectionTime: .atDocumentEnd,
@@ -459,8 +372,6 @@ struct ReaderWebView: UIViewRepresentable {
         webView.isOpaque = true
         webView.backgroundColor = .systemBackground
         webView.scrollView.contentInsetAdjustmentBehavior = .never
-        webView.scrollView.alwaysBounceVertical = false
-        webView.scrollView.alwaysBounceHorizontal = false
         webView.navigationDelegate = context.coordinator
 
         var request = URLRequest(url: url)
@@ -482,8 +393,8 @@ struct ReaderWebView: UIViewRepresentable {
         init(onFinished: (() -> Void)?) {
             self.onFinished = onFinished
             super.init()
-            // Timeout fallback — force-show after 6 seconds even if didFinish never fires
-            DispatchQueue.main.asyncAfter(deadline: .now() + 6) { [weak self] in
+            // Timeout fallback — force-show after 8 seconds
+            DispatchQueue.main.asyncAfter(deadline: .now() + 8) { [weak self] in
                 self?.complete()
             }
         }
@@ -495,9 +406,7 @@ struct ReaderWebView: UIViewRepresentable {
         }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-            // CSS was injected at document start so layout is already settled.
-            // Short delay lets any late-loading site JS finish before reveal.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
                 self?.complete()
             }
         }
@@ -514,9 +423,9 @@ struct ReaderWebView: UIViewRepresentable {
             }
         }
 
-        func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
-            // Don't show yet — wait for didFinish so layout has settled
-            // and our reader CSS has been applied, preventing visible reflow.
+        // Allow redirects — some sites (Ars Technica) redirect before serving content
+        func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+            decisionHandler(.allow)
         }
     }
 }
