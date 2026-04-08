@@ -801,44 +801,6 @@ private struct ShortEmbedWebView: UIViewRepresentable {
         config.allowsInlineMediaPlayback = true
         config.mediaTypesRequiringUserActionForPlayback = []
 
-        // Inject CSS to hide YouTube's UI chrome — keep only the video player
-        let hideChrome = WKUserScript(source: """
-        (function() {
-            var style = document.createElement('style');
-            style.textContent = `
-                /* Hide everything except the video player */
-                #related, #comments, #below, #secondary,
-                ytm-pivot-bar-renderer, ytm-app-header-renderer,
-                .ytm-autonav-bar, .watch-below-the-player,
-                .related-chips-slot-wrapper, ytm-item-section-renderer,
-                .slim-video-metadata-header, .slim-video-action-bar-actions,
-                ytm-engagement-panel-section-list-renderer,
-                #header, ytm-bottom-sheet-renderer, .player-controls-top,
-                .ytm-related-videos-renderer, ytm-comments-entry-point-header-renderer,
-                ytm-comment-thread-renderer, .watch-below-the-player *,
-                [class*="related"], [class*="comment"],
-                .slim-video-information-renderer .slim-video-metadata-title-and-badges,
-                .menu-renderer, ytm-menu-renderer,
-                ytm-slim-video-action-bar-renderer {
-                    display: none !important;
-                }
-                /* Make the video player fill the screen */
-                .player-container, .html5-video-player, video,
-                #player, ytm-player-microformat-renderer {
-                    position: fixed !important;
-                    top: 0 !important; left: 0 !important;
-                    width: 100vw !important; height: 100vh !important;
-                    max-width: none !important; max-height: none !important;
-                    z-index: 9999 !important;
-                }
-                body { background: #000 !important; overflow: hidden !important; }
-                html { background: #000 !important; }
-            `;
-            document.documentElement.appendChild(style);
-        })();
-        """, injectionTime: .atDocumentEnd, forMainFrameOnly: true)
-        config.userContentController.addUserScript(hideChrome)
-
         let webView = WKWebView(frame: .zero, configuration: config)
         webView.isOpaque = false
         webView.backgroundColor = .black
@@ -846,21 +808,19 @@ private struct ShortEmbedWebView: UIViewRepresentable {
         webView.scrollView.isScrollEnabled = false
         webView.scrollView.bounces = false
         webView.scrollView.contentInsetAdjustmentBehavior = .never
+        webView.navigationDelegate = context.coordinator
 
         loadEmbed(in: webView)
         return webView
     }
 
     func updateUIView(_ webView: WKWebView, context: Context) {
-        // Video ID changed — reload
         if context.coordinator.currentVideoID != videoID {
             context.coordinator.currentVideoID = videoID
             loadEmbed(in: webView)
         }
     }
 
-    /// Tear down the web content process when SwiftUI removes this view
-    /// to prevent YouTube iframes from accumulating in memory.
     static func dismantleUIView(_ webView: WKWebView, coordinator: Coordinator) {
         webView.stopLoading()
         webView.loadHTMLString("", baseURL: nil)
@@ -871,25 +831,73 @@ private struct ShortEmbedWebView: UIViewRepresentable {
     }
 
     private func loadEmbed(in webView: WKWebView) {
-        // Sanitize videoID — only allow alphanumeric, hyphens, and underscores
         let safeID = String(videoID.unicodeScalars.filter {
             CharacterSet.alphanumerics.contains($0) || $0 == "-" || $0 == "_"
         })
         guard !safeID.isEmpty else { return }
 
-        // Load the YouTube mobile watch page directly. The /embed/ endpoint
-        // requires a valid Referer header that WKWebView doesn't reliably send,
-        // causing error 152. The mobile watch page works without it and gives
-        // us the native YouTube player with full controls.
-        let watchURL = URL(string: "https://m.youtube.com/watch?v=\(safeID)")!
-        var request = URLRequest(url: watchURL)
-        request.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1", forHTTPHeaderField: "User-Agent")
-        webView.load(request)
+        // Use the YouTube IFrame Player API — lightweight, supports quality
+        // control, and avoids the embed Referer issue (the API script loads
+        // from youtube.com which establishes the connection properly).
+        let html = """
+        <!DOCTYPE html>
+        <html>
+        <head>
+        <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+        <style>
+            *{margin:0;padding:0}
+            html,body{width:100%;height:100%;background:#000;overflow:hidden}
+            #player{position:absolute;top:0;left:0;width:100%;height:100%}
+        </style>
+        </head>
+        <body>
+        <div id="player"></div>
+        <script>
+            var tag=document.createElement('script');
+            tag.src='https://www.youtube.com/iframe_api';
+            document.head.appendChild(tag);
+            var player;
+            function onYouTubeIframeAPIReady(){
+                player=new YT.Player('player',{
+                    videoId:'\(safeID)',
+                    playerVars:{
+                        autoplay:1,
+                        playsinline:1,
+                        controls:1,
+                        rel:0,
+                        modestbranding:1,
+                        fs:0,
+                        iv_load_policy:3,
+                        loop:1,
+                        playlist:'\(safeID)',
+                        vq:'hd720'
+                    },
+                    events:{
+                        onReady:function(e){
+                            e.target.setPlaybackQuality('hd720');
+                            e.target.playVideo();
+                        }
+                    }
+                });
+            }
+        </script>
+        </body>
+        </html>
+        """
+        webView.loadHTMLString(html, baseURL: URL(string: "https://www.youtube.com/"))
     }
 
-    class Coordinator {
+    class Coordinator: NSObject, WKNavigationDelegate {
         var currentVideoID: String
-        init(videoID: String) { self.currentVideoID = videoID }
+        init(videoID: String) {
+            self.currentVideoID = videoID
+            super.init()
+        }
+
+        // Allow the YouTube IFrame API script and embed to load
+        func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+            decisionHandler(.allow)
+        }
     }
 }
 #endif
