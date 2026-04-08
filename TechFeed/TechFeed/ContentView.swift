@@ -79,11 +79,24 @@ struct ContentView: View {
 struct FeedTab: View {
     @ObservedObject var parser: FeedParser
     @State private var selectedItem: FeedItem?
-    @State private var deepDiveItem: FeedItem?
     @State private var selectedCategory = "Top Picks"
     @State private var searchText = ""
-    @State private var showSettings = false
-    @State private var showDigest = false
+
+    /// Single sheet state prevents iOS sheet-presentation conflicts.
+    private enum SheetKind: Identifiable {
+        case deepDive(FeedItem)
+        case settings
+        case digest
+
+        var id: String {
+            switch self {
+            case .deepDive(let item): return "deepDive-\(item.id)"
+            case .settings: return "settings"
+            case .digest: return "digest"
+            }
+        }
+    }
+    @State private var activeSheet: SheetKind?
     @Environment(\.horizontalSizeClass) private var sizeClass
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -110,14 +123,15 @@ struct FeedTab: View {
         .fullScreenCover(item: $selectedItem) { item in
             ArticleReaderView(item: item)
         }
-        .sheet(item: $deepDiveItem) { item in
-            DeepDiveView(primaryItem: item)
-        }
-        .sheet(isPresented: $showSettings) {
-            SettingsView()
-        }
-        .sheet(isPresented: $showDigest) {
-            WeeklyDigestView(items: parser.items)
+        .sheet(item: $activeSheet) { sheet in
+            switch sheet {
+            case .deepDive(let item):
+                DeepDiveView(primaryItem: item)
+            case .settings:
+                SettingsView()
+            case .digest:
+                WeeklyDigestView(items: parser.items)
+            }
         }
     }
 
@@ -133,7 +147,7 @@ struct FeedTab: View {
             .ignoresSafeArea(edges: .top)
 
             HStack {
-                Button { showDigest = true } label: {
+                Button { activeSheet = .digest } label: {
                     Image(systemName: "chart.bar.fill")
                         .font(.subheadline)
                         .foregroundColor(.white.opacity(0.9))
@@ -146,7 +160,7 @@ struct FeedTab: View {
 
                 Spacer()
 
-                Button { showSettings = true } label: {
+                Button { activeSheet = .settings } label: {
                     Image(systemName: "gearshape.fill")
                         .font(.subheadline)
                         .foregroundColor(.white.opacity(0.9))
@@ -273,15 +287,11 @@ struct FeedTab: View {
                         VStack(spacing: 16) {
                             ForEach(top) { item in
                                 VStack(spacing: 0) {
-                                    StoryCardView(item: item, onDeepDive: item.relatedArticles.isEmpty ? nil : {
-                                        deepDiveItem = item
+                                    StoryCardView(item: item, onTap: {
+                                        tapAction(item)
+                                    }, onDeepDive: item.relatedArticles.isEmpty ? nil : {
+                                        activeSheet = .deepDive(item)
                                     })
-                                        .onTapGesture {
-                                            PreferenceEngine.shared.recordTap(on: item)
-                                            ReadingStreakManager.shared.recordRead()
-                                            ReadStateManager.shared.markRead(item)
-                                            selectedItem = item
-                                        }
 
                                     if !item.relatedArticles.isEmpty {
                                         MoreCoverageView(
@@ -291,7 +301,7 @@ struct FeedTab: View {
                                                 selectedItem = related
                                             },
                                             onDeepDive: {
-                                                deepDiveItem = item
+                                                activeSheet = .deepDive(item)
                                             }
                                         )
                                     }
@@ -579,7 +589,8 @@ struct SavedArticleRow: View {
 
 struct ShortsTab: View {
     @ObservedObject var parser: FeedParser
-    @State private var currentIndex = 0
+    /// Selected by item ID, not integer index — stable across feed refreshes.
+    @State private var currentItemID: String?
     @State private var hasTriedRefresh = false
     /// Track which item IDs we've already recorded taps for this session
     @State private var recordedIDs: Set<String> = []
@@ -605,15 +616,15 @@ struct ShortsTab: View {
                 // Rotation trick: iOS 16 TabView .page only pages horizontally.
                 // Rotate the TabView -90° and counter-rotate each page +90°.
                 GeometryReader { geo in
-                    TabView(selection: $currentIndex) {
-                        ForEach(Array(shortItems.enumerated()), id: \.element.id) { index, item in
+                    TabView(selection: $currentItemID) {
+                        ForEach(shortItems) { item in
                             ShortPlayerPage(
                                 item: item,
-                                isActive: index == currentIndex
+                                isActive: item.id == currentItemID
                             )
                             .frame(width: geo.size.width, height: geo.size.height)
                             .rotationEffect(.degrees(90))
-                            .tag(index)
+                            .tag(Optional(item.id))
                         }
                     }
                     .tabViewStyle(.page(indexDisplayMode: .never))
@@ -622,15 +633,15 @@ struct ShortsTab: View {
                     .frame(width: geo.size.width, height: geo.size.height)
                 }
                 .ignoresSafeArea()
-                // Clamp currentIndex when shortItems array shrinks after refresh
-                .onChange(of: shortItems.count) { newCount in
-                    if newCount > 0, currentIndex >= newCount {
-                        currentIndex = newCount - 1
+                .onAppear {
+                    // Set initial selection if not set
+                    if currentItemID == nil, let first = shortItems.first {
+                        currentItemID = first.id
                     }
                 }
-                .onChange(of: currentIndex) { newIndex in
-                    guard newIndex >= 0, newIndex < shortItems.count else { return }
-                    let item = shortItems[newIndex]
+                .onChange(of: currentItemID) { newID in
+                    guard let newID = newID,
+                          let item = shortItems.first(where: { $0.id == newID }) else { return }
                     // Only record once per item per session to avoid inflating scores/stats
                     if !recordedIDs.contains(item.id) {
                         recordedIDs.insert(item.id)
@@ -1370,6 +1381,7 @@ struct BriefingCardView: View {
 
 struct StoryCardView: View {
     let item: FeedItem
+    var onTap: (() -> Void)? = nil
     var onDeepDive: (() -> Void)? = nil
     @ObservedObject private var bookmarks = BookmarkManager.shared
     @ObservedObject private var readState = ReadStateManager.shared
@@ -1384,14 +1396,19 @@ struct StoryCardView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            // Image — overlay pattern prevents .fill from blowing out layout
-            Color(.tertiarySystemGroupedBackground)
-                .frame(height: 200)
-                .overlay(
-                    CachedAsyncImage(url: item.imageURL)
-                        .scaledToFill()
-                )
-                .clipped()
+            // Image — tappable to open article (doesn't interfere with action buttons below)
+            Button {
+                onTap?()
+            } label: {
+                Color(.tertiarySystemGroupedBackground)
+                    .frame(height: 200)
+                    .overlay(
+                        CachedAsyncImage(url: item.imageURL)
+                            .scaledToFill()
+                    )
+                    .clipped()
+            }
+            .buttonStyle(.plain)
 
             // Content
             VStack(alignment: .leading, spacing: 10) {
@@ -1490,33 +1507,41 @@ struct StoryCardView: View {
                     .font(.subheadline)
                 }
 
-                // Title
-                HStack(alignment: .top, spacing: 6) {
-                    Text(item.title)
-                        .font(.headline.weight(.bold))
-                        .foregroundColor(isRead ? .secondary : .primary)
-                        .lineLimit(3)
-                        .fixedSize(horizontal: false, vertical: true)
+                // Title + description — tappable to open article
+                Button {
+                    onTap?()
+                } label: {
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack(alignment: .top, spacing: 6) {
+                            Text(item.title)
+                                .font(.headline.weight(.bold))
+                                .foregroundColor(isRead ? .secondary : .primary)
+                                .lineLimit(3)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .multilineTextAlignment(.leading)
 
-                    if isRead {
-                        Text("READ")
-                            .font(.system(size: 8, weight: .heavy))
-                            .foregroundColor(.secondary)
-                            .padding(.horizontal, 5)
-                            .padding(.vertical, 2)
-                            .background(Color.secondary.opacity(0.15))
-                            .clipShape(Capsule())
-                            .padding(.top, 3)
+                            if isRead {
+                                Text("READ")
+                                    .font(.system(size: 8, weight: .heavy))
+                                    .foregroundColor(.secondary)
+                                    .padding(.horizontal, 5)
+                                    .padding(.vertical, 2)
+                                    .background(Color.secondary.opacity(0.15))
+                                    .clipShape(Capsule())
+                                    .padding(.top, 3)
+                            }
+                        }
+
+                        if !item.itemDescription.isEmpty {
+                            Text(item.itemDescription)
+                                .font(.subheadline)
+                                .foregroundColor(.secondary)
+                                .lineLimit(2)
+                                .multilineTextAlignment(.leading)
+                        }
                     }
                 }
-
-                // Description
-                if !item.itemDescription.isEmpty {
-                    Text(item.itemDescription)
-                        .font(.subheadline)
-                        .foregroundColor(.secondary)
-                        .lineLimit(2)
-                }
+                .buttonStyle(.plain)
 
                 // Deep Dive button
                 if let onDeepDive = onDeepDive {

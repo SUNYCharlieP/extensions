@@ -11,6 +11,8 @@ class GoogleSignInManager: ObservableObject {
     private let userKey = "arca_google_user"
     private let tokenKey = "arca_google_token"
     private var contextProvider: SignInContextProvider?
+    /// Must retain the auth session for the duration of the flow.
+    private var authSession: ASWebAuthenticationSession?
 
     @Published var isSignedIn: Bool = false
     @Published var userName: String = ""
@@ -45,10 +47,11 @@ class GoogleSignInManager: ObservableObject {
         guard let authURL = components.url else { return }
         let callbackScheme = "com.charlespiazza.arca"
 
-        let session = ASWebAuthenticationSession(
+        authSession = ASWebAuthenticationSession(
             url: authURL,
             callbackURLScheme: callbackScheme
         ) { [weak self] callbackURL, error in
+            self?.authSession = nil // Release after completion
             guard let self = self, let callbackURL = callbackURL, error == nil else { return }
 
             // Extract authorization code from callback
@@ -61,9 +64,9 @@ class GoogleSignInManager: ObservableObject {
 
         let provider = SignInContextProvider(anchor: anchor)
         self.contextProvider = provider
-        session.presentationContextProvider = provider
-        session.prefersEphemeralWebBrowserSession = false
-        session.start()
+        authSession?.presentationContextProvider = provider
+        authSession?.prefersEphemeralWebBrowserSession = false
+        authSession?.start()
     }
 
     func signOut() {
