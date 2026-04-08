@@ -19,7 +19,7 @@ class FeedParser: ObservableObject {
         var collectedItems: [FeedItem] = []
         let group = DispatchGroup()
 
-        for feed in RSSFeed.allFeeds {
+        for feed in SourceManager.shared.enabledFeeds {
             guard let url = URL(string: feed.url) else { continue }
             group.enter()
             URLSession.shared.dataTask(with: url) { [weak self] data, _, error in
@@ -39,12 +39,35 @@ class FeedParser: ObservableObject {
 
         group.notify(queue: .main) { [weak self] in
             guard let self = self else { return }
-            let filtered = collectedItems.filter { !Self.isPromo($0) }
-            let deduped = Self.deduplicate(filtered, preferences: self.preferences)
-            let sorted = self.preferences.scoreItems(deduped)
-            self.items = Self.promoteHero(sorted)
+            // Copy under lock to prevent race with in-flight URLSession callbacks
+            self.lock.lock()
+            let snapshot = collectedItems
+            self.lock.unlock()
+            let filtered = snapshot.filter { !Self.isPromo($0) }
+            let categorized = Self.categorize(filtered)
+            let deduped = Self.deduplicate(categorized, preferences: self.preferences)
+            let scored = self.preferences.scoreItems(deduped)
+            let diverse = Self.diversify(scored)
+            self.items = Self.promoteHero(diverse)
             self.isLoading = false
             self.fetchMissingImages()
+            NotificationManager.shared.checkForBreakingStories(self.items)
+            OfflineCacheManager.shared.cacheBookmarkedArticles(from: self.items)
+            OfflineCacheManager.shared.pruneOldCache()
+            Self.updateWidgetData(self.items)
+        }
+    }
+
+    /// Push top stories to the widget via shared UserDefaults.
+    private static func updateWidgetData(_ items: [FeedItem]) {
+        struct WidgetStory: Codable {
+            let title: String
+            let source: String
+            let isTrending: Bool
+        }
+        let stories = items.prefix(5).map { WidgetStory(title: $0.title, source: $0.source, isTrending: $0.isTrending) }
+        if let data = try? JSONEncoder().encode(stories) {
+            UserDefaults(suiteName: "group.com.arca.techfeed")?.set(data, forKey: "widget_stories")
         }
     }
 
@@ -58,7 +81,7 @@ class FeedParser: ObservableObject {
             var collectedItems: [FeedItem] = []
             let group = DispatchGroup()
 
-            for feed in RSSFeed.allFeeds {
+            for feed in SourceManager.shared.enabledFeeds {
                 guard let url = URL(string: feed.url) else { continue }
                 group.enter()
                 URLSession.shared.dataTask(with: url) { [weak self] data, _, error in
@@ -81,12 +104,20 @@ class FeedParser: ObservableObject {
                     continuation.resume()
                     return
                 }
-                let filtered = collectedItems.filter { !Self.isPromo($0) }
-                let deduped = Self.deduplicate(filtered, preferences: self.preferences)
-                let sorted = self.preferences.scoreItems(deduped)
-                self.items = Self.promoteHero(sorted)
+                // Copy under lock to prevent race with in-flight URLSession callbacks
+                self.lock.lock()
+                let snapshot = collectedItems
+                self.lock.unlock()
+                let filtered = snapshot.filter { !Self.isPromo($0) }
+                let categorized = Self.categorize(filtered)
+                let deduped = Self.deduplicate(categorized, preferences: self.preferences)
+                let scored = self.preferences.scoreItems(deduped)
+                let diverse = Self.diversify(scored)
+                self.items = Self.promoteHero(diverse)
                 self.isLoading = false
                 self.fetchMissingImages()
+                NotificationManager.shared.checkForBreakingStories(self.items)
+                OfflineCacheManager.shared.cacheBookmarkedArticles(from: self.items)
                 continuation.resume()
             }
         }
@@ -183,10 +214,9 @@ class FeedParser: ObservableObject {
 
                 let shared = wordsA.intersection(wordsB)
                 let union = wordsA.union(wordsB)
+                guard !union.isEmpty else { continue }
                 let jaccard = Double(shared.count) / Double(union.count)
 
-                // Match if Jaccard >= 0.4 OR if 3+ significant words overlap
-                // (catches differently-worded articles about the same subject)
                 if jaccard >= 0.4 || shared.count >= 3 {
                     group.append(j)
                     usedIndices.insert(j)
@@ -194,7 +224,7 @@ class FeedParser: ObservableObject {
             }
 
             // Pick the best: preferred source → has image → newest
-            let best = group.max { a, b in
+            let bestIdx = group.max { a, b in
                 let itemA = items[a]
                 let itemB = items[b]
                 let scoreA = preferences.sourceAffinity(itemA.source) + (itemA.imageURL != nil ? 0.5 : 0)
@@ -203,8 +233,15 @@ class FeedParser: ObservableObject {
                 return itemA.pubDate < itemB.pubDate
             }!
 
-            result.append(items[best])
-            usedIndices.insert(best)
+            // Attach other sources as "More Coverage" on the winning item
+            var bestItem = items[bestIdx]
+            let related = group.filter { $0 != bestIdx }.map { items[$0] }
+            if !related.isEmpty {
+                bestItem.relatedArticles = related
+            }
+
+            result.append(bestItem)
+            usedIndices.insert(bestIdx)
         }
 
         return result
@@ -234,6 +271,151 @@ class FeedParser: ObservableObject {
         let hero = reordered.remove(at: heroIndex)
         reordered.insert(hero, at: 0)
         return reordered
+    }
+
+    // MARK: - Source Diversity
+
+    /// Reorders scored items so no single source dominates the feed.
+    /// Rules:
+    ///  - No more than 2 consecutive items from the same source.
+    ///  - Top 10 visual slots (hero + featured + first "more stories") must include
+    ///    at least 4 distinct sources.
+    ///  - Uses a round-robin pull from per-source queues, ordered by best score,
+    ///    so high-quality articles still surface first for each source.
+    private static func diversify(_ items: [FeedItem]) -> [FeedItem] {
+        guard items.count > 3 else { return items }
+
+        // Group items by source, preserving score order within each group
+        var buckets: [String: [FeedItem]] = [:]
+        for item in items {
+            buckets[item.source, default: []].append(item)
+        }
+
+        // Order sources by their top item's score (descending)
+        let sourceOrder = buckets.keys.sorted { a, b in
+            let scoreA = buckets[a]!.first?.preferenceScore ?? 0
+            let scoreB = buckets[b]!.first?.preferenceScore ?? 0
+            if abs(scoreA - scoreB) < 0.001 {
+                // Tie-break with slight randomization based on time so feed feels fresh
+                let slot = Int(Date().timeIntervalSince1970) / 3600
+                return a.hashValue ^ slot < b.hashValue ^ slot
+            }
+            return scoreA > scoreB
+        }
+
+        var result: [FeedItem] = []
+        var sourceQueues: [String: [FeedItem]] = buckets
+        let totalCount = items.count
+
+        while result.count < totalCount {
+            var addedThisRound = false
+
+            for source in sourceOrder {
+                guard var queue = sourceQueues[source], !queue.isEmpty else { continue }
+
+                // Check consecutive limit: skip if last 2 items are from this source
+                let tail = result.suffix(2)
+                if tail.count == 2 && tail.allSatisfy({ $0.source == source }) {
+                    continue
+                }
+
+                result.append(queue.removeFirst())
+                sourceQueues[source] = queue
+                addedThisRound = true
+            }
+
+            // Safety: if no source could add (shouldn't happen), drain remaining
+            if !addedThisRound {
+                for source in sourceOrder {
+                    if let queue = sourceQueues[source] {
+                        result.append(contentsOf: queue)
+                        sourceQueues[source] = []
+                    }
+                }
+                break
+            }
+        }
+
+        return result
+    }
+
+    // MARK: - Keyword-Based Categorization
+
+    /// Per-article keyword categorization — overrides source-level category
+    /// when the content clearly belongs elsewhere. More specific categories
+    /// win over general ones.
+    private static let categoryKeywords: [(category: String, keywords: [String])] = [
+        // Most specific first — order matters for tie-breaking
+        ("Security", [
+            "hack", "hacked", "hacker", "breach", "malware", "ransomware",
+            "vulnerability", "exploit", "phishing", "cybersecurity", "cyber",
+            "zero-day", "zero day", "cve-", "infosec", "botnet", "ddos",
+            "trojan", "spyware", "encryption", "data leak", "data breach",
+            "security flaw", "password", "credential", "authentication",
+        ]),
+        ("Apple", [
+            "iphone", "ipad", "macbook", "imac", "mac pro", "mac mini",
+            "mac studio", "apple watch", "watchos", "airpods", "airpod",
+            "apple tv", "homepod", "vision pro", "visionos", "ios ",
+            "ios26", "ios 26", "ipados", "macos", "carplay", "siri",
+            "apple intelligence", "apple silicon", "m1 ", "m2 ", "m3 ",
+            "m4 ", "m5 ", "a17", "a18", "swift ui", "swiftui", "xcode",
+            "app store", "apple arcade", "apple music", "icloud",
+            "9to5mac", "macrumors", "wwdc", "apple event",
+        ]),
+        ("Science", [
+            "research", "study finds", "scientists", "researchers",
+            "climate", "quantum", "nasa", "space", "physics", "biology",
+            "genome", "crispr", "fusion", "neuroscience", "ai safety",
+            "machine learning", "neural network", "deep learning",
+            "laboratory", "experiment", "peer-reviewed", "journal",
+            "artemis", "mars", "satellite", "telescope",
+        ]),
+        ("Hacker News", [
+            // HN keeps its source-based category — no keyword override needed
+        ]),
+    ]
+
+    /// Non-Apple subjects — if the TITLE is primarily about one of these,
+    /// don't let a stray "iOS" in the description pull it into Apple.
+    private static let nonAppleSubjects: [String] = [
+        "google", "gemini", "android", "pixel", "chrome os", "chromebook",
+        "samsung", "galaxy", "microsoft", "windows", "copilot", "bing",
+        "meta ", "instagram", "whatsapp", "threads app",
+        "amazon", "alexa", "kindle", "nvidia", "openai", "chatgpt",
+        "tiktok", "snapchat", "spotify", "tesla", "spacex",
+    ]
+
+    /// Reclassify articles based on title + description keywords.
+    /// Title is weighted more heavily — if the title is clearly about a
+    /// non-Apple subject, the article won't be pulled into Apple even if
+    /// the description mentions iOS/iPhone.
+    private static func categorize(_ items: [FeedItem]) -> [FeedItem] {
+        return items.map { item in
+            // HN items always stay in HN
+            if item.source == "Hacker News" { return item }
+
+            var mutItem = item
+            let title = item.title.lowercased()
+            let text = (item.title + " " + item.itemDescription).lowercased()
+
+            // Check if title is primarily about a non-Apple company
+            let titleIsNonApple = nonAppleSubjects.contains(where: { title.contains($0) })
+
+            for (category, keywords) in categoryKeywords {
+                guard !keywords.isEmpty else { continue }
+
+                // Block Apple category if title subject is clearly non-Apple
+                if category == "Apple" && titleIsNonApple { continue }
+
+                if keywords.contains(where: { text.contains($0) }) {
+                    mutItem.category = category
+                    break
+                }
+            }
+
+            return mutItem
+        }
     }
 
     private static let promoPatterns: [String] = [
@@ -556,7 +738,8 @@ private enum DateParsing {
         }
         if let date = isoFractional.date(from: string) { return date }
         if let date = isoStandard.date(from: string) { return date }
-        return Date()
+        // Return distant past so unparseable dates sort to the bottom, not the top
+        return Date.distantPast
     }
 }
 

@@ -5,6 +5,7 @@ struct ArticleReaderView: View {
     let item: FeedItem
     @Environment(\.dismiss) private var dismiss
     @State private var isWebViewLoaded = false
+    @State private var showSlowLoadHint = false
 
     var body: some View {
         NavigationStack {
@@ -13,6 +14,8 @@ struct ArticleReaderView: View {
                     withAnimation(.easeIn(duration: 0.3)) {
                         isWebViewLoaded = true
                     }
+                    // Cache for offline after reading
+                    OfflineCacheManager.shared.cacheArticle(item)
                 })
                 .ignoresSafeArea(edges: .bottom)
                 .opacity(isWebViewLoaded ? 1 : 0)
@@ -35,6 +38,15 @@ struct ArticleReaderView: View {
                     }
                     ToolbarItem(placement: .navigationBarTrailing) {
                         HStack(spacing: 16) {
+                            Button {
+                                let impact = UIImpactFeedbackGenerator(style: .medium)
+                                impact.impactOccurred()
+                                BookmarkManager.shared.toggle(item)
+                            } label: {
+                                Image(systemName: BookmarkManager.shared.isBookmarked(item) ? "bookmark.fill" : "bookmark")
+                                    .foregroundColor(.arcaOrange)
+                            }
+
                             ShareLink(item: item.url) {
                                 Image(systemName: "square.and.arrow.up")
                                     .foregroundColor(.arcaOrange)
@@ -84,11 +96,36 @@ struct ArticleReaderView: View {
                 .scaleEffect(0.7)
                 .padding(.top, 8)
 
+            if showSlowLoadHint {
+                VStack(spacing: 10) {
+                    Text("Taking longer than usual...")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+
+                    Link(destination: item.url) {
+                        HStack(spacing: 4) {
+                            Image(systemName: "safari")
+                            Text("Open in Safari")
+                        }
+                        .font(.caption.weight(.semibold))
+                        .foregroundColor(.arcaOrange)
+                    }
+                }
+                .transition(.opacity)
+            }
+
             Spacer()
         }
         .padding(.top, 20)
         .frame(maxWidth: .infinity)
         .background(Color(.systemBackground))
+        .onAppear {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 4) {
+                if !isWebViewLoaded {
+                    withAnimation { showSlowLoadHint = true }
+                }
+            }
+        }
     }
 }
 
@@ -139,19 +176,44 @@ struct ReaderWebView: UIViewRepresentable {
                 padding: 20px 16px 60px !important;
                 -webkit-text-size-adjust: 100% !important;
             }
+            /* Force all inner elements to inherit reader colors */
+            body *, body *::before, body *::after {
+                background-color: transparent !important;
+                border-color: #e5e5ea !important;
+            }
+            /* Restore specific backgrounds that should keep color */
+            pre, code, .highlight {
+                background: #f5f5f5 !important;
+            }
             @media (prefers-color-scheme: dark) {
                 body {
                     color: #e5e5e5 !important;
                     background: #1c1c1e !important;
                 }
-                img { opacity: 0.9; }
+                body *, body *::before, body *::after {
+                    color: inherit !important;
+                    border-color: #38383a !important;
+                }
+                /* Let links and specific elements keep their colors */
                 a { color: #FF854F !important; }
+                img { opacity: 0.9; }
+                pre, code, .highlight {
+                    background: #2c2c2e !important;
+                    color: #e5e5e5 !important;
+                }
+                figcaption { color: #8e8e93 !important; }
+                blockquote { color: #98989d !important; }
+                table, th, td {
+                    background-color: transparent !important;
+                    color: #e5e5e5 !important;
+                }
             }
             img {
                 max-width: 100% !important;
                 height: auto !important;
                 border-radius: 12px !important;
                 margin: 16px 0 !important;
+                background-color: transparent !important;
             }
             h1, h2, h3 {
                 font-weight: 700 !important;
@@ -167,16 +229,6 @@ struct ReaderWebView: UIViewRepresentable {
                 font-size: 14px !important;
                 color: #8e8e93 !important;
                 margin-top: 8px !important;
-            }
-            pre, code {
-                font-size: 14px !important;
-                background: #f5f5f5 !important;
-                border-radius: 8px !important;
-                padding: 2px 6px !important;
-                overflow-x: auto !important;
-            }
-            @media (prefers-color-scheme: dark) {
-                pre, code { background: #2c2c2e !important; }
             }
             blockquote {
                 border-left: 3px solid #FF7A3D !important;
@@ -236,8 +288,8 @@ struct ReaderWebView: UIViewRepresentable {
         init(onFinished: (() -> Void)?) {
             self.onFinished = onFinished
             super.init()
-            // Timeout fallback — force-show after 10 seconds even if didFinish never fires
-            DispatchQueue.main.asyncAfter(deadline: .now() + 10) { [weak self] in
+            // Timeout fallback — force-show after 6 seconds even if didFinish never fires
+            DispatchQueue.main.asyncAfter(deadline: .now() + 6) { [weak self] in
                 self?.complete()
             }
         }

@@ -1,12 +1,64 @@
 import SwiftUI
 
-// MARK: - Main View
+// MARK: - Root Tab View
 
 struct ContentView: View {
     @StateObject private var parser = FeedParser()
+    @StateObject private var bookmarks = BookmarkManager.shared
+    @StateObject private var sourceManager = SourceManager.shared
+    @State private var selectedTab = 0
+    @State private var showOnboarding = false
+
+    var body: some View {
+        Group {
+            if showOnboarding {
+                OnboardingView {
+                    withAnimation {
+                        showOnboarding = false
+                    }
+                    parser.fetchAllFeeds()
+                }
+            } else {
+                TabView(selection: $selectedTab) {
+                    FeedTab(parser: parser)
+                        .tabItem {
+                            Image(systemName: "newspaper.fill")
+                            Text("Feed")
+                        }
+                        .tag(0)
+
+                    BookmarksTab(parser: parser)
+                        .tabItem {
+                            Image(systemName: "bookmark.fill")
+                            Text("Saved")
+                        }
+                        .tag(1)
+                }
+                .tint(.arcaOrange)
+                .onAppear {
+                    parser.fetchAllFeeds()
+                    NotificationManager.shared.requestPermission()
+                }
+            }
+        }
+        .onAppear {
+            if !sourceManager.hasOnboarded {
+                showOnboarding = true
+            }
+        }
+    }
+}
+
+// MARK: - Feed Tab
+
+struct FeedTab: View {
+    @ObservedObject var parser: FeedParser
     @State private var selectedItem: FeedItem?
-    @State private var hasAppeared = false
+    @State private var deepDiveItem: FeedItem?
     @State private var selectedCategory = "Top Picks"
+    @State private var searchText = ""
+    @State private var showSettings = false
+    @State private var showDigest = false
 
     private let categories = ["Top Picks", "Apple", "General Tech", "Hacker News", "Security", "Science"]
 
@@ -29,10 +81,14 @@ struct ContentView: View {
         .fullScreenCover(item: $selectedItem) { item in
             ArticleReaderView(item: item)
         }
-        .onAppear {
-            guard !hasAppeared else { return }
-            hasAppeared = true
-            parser.fetchAllFeeds()
+        .sheet(item: $deepDiveItem) { item in
+            DeepDiveView(primaryItem: item)
+        }
+        .sheet(isPresented: $showSettings) {
+            SettingsView()
+        }
+        .sheet(isPresented: $showDigest) {
+            WeeklyDigestView(items: parser.items)
         }
     }
 
@@ -47,94 +103,165 @@ struct ContentView: View {
             )
             .ignoresSafeArea(edges: .top)
 
-            ArcaLogoView()
-                .frame(width: 28, height: 36)
-                .padding(.top, 6)
-                .padding(.bottom, 10)
+            HStack {
+                Button { showDigest = true } label: {
+                    Image(systemName: "chart.bar.fill")
+                        .font(.subheadline)
+                        .foregroundColor(.white.opacity(0.9))
+                }
+
+                Spacer()
+
+                ArcaLogoView()
+                    .frame(width: 28, height: 36)
+
+                Spacer()
+
+                Button { showSettings = true } label: {
+                    Image(systemName: "gearshape.fill")
+                        .font(.subheadline)
+                        .foregroundColor(.white.opacity(0.9))
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 6)
+            .padding(.bottom, 10)
         }
         .frame(height: 56)
+    }
+
+    // MARK: - Time-Aware Feed
+
+    private enum FeedMood {
+        case morning, midday, evening
+
+        var sectionTitle: String {
+            switch self {
+            case .morning: return "Overnight Catches"
+            case .midday: return "Breaking Now"
+            case .evening: return "Today's Analysis"
+            }
+        }
+
+        var briefingSubtitle: String {
+            switch self {
+            case .morning: return "Here's what happened while you slept"
+            case .midday: return "The biggest stories right now"
+            case .evening: return "Today's top stories at a glance"
+            }
+        }
+    }
+
+    private var currentMood: FeedMood {
+        let hour = Calendar.current.component(.hour, from: Date())
+        if hour < 12 { return .morning }
+        if hour < 17 { return .midday }
+        return .evening
     }
 
     // MARK: - Feed Content
 
     private var filteredItems: [FeedItem] {
+        var items: [FeedItem]
         if selectedCategory == "Top Picks" {
-            return parser.items
+            items = parser.items
+        } else {
+            items = parser.items.filter { $0.category == selectedCategory }
         }
-        return parser.items.filter { $0.category == selectedCategory }
+        if !searchText.isEmpty {
+            let query = searchText.lowercased()
+            items = items.filter {
+                $0.title.lowercased().contains(query) ||
+                $0.source.lowercased().contains(query) ||
+                $0.itemDescription.lowercased().contains(query)
+            }
+        }
+        return items
     }
 
-    /// Split items into those with images (visual) and those without (text-only).
-    private var visualItems: [FeedItem] {
-        filteredItems.filter { $0.imageURL != nil }
-    }
-
-    private var textItems: [FeedItem] {
-        filteredItems.filter { $0.imageURL == nil }
+    private var qualityItems: [FeedItem] {
+        filteredItems.filter { $0.hasQualityImage }
     }
 
     private var feedContent: some View {
         ScrollView {
-            VStack(spacing: 0) {
+            LazyVStack(spacing: 0) {
                 // Gradient header
                 arcaHeader
+
+                // Search bar
+                HStack(spacing: 10) {
+                    Image(systemName: "magnifyingglass")
+                        .foregroundColor(.secondary)
+                    TextField("Search stories...", text: $searchText)
+                        .font(.subheadline)
+                        .autocorrectionDisabled()
+                    if !searchText.isEmpty {
+                        Button { searchText = "" } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                }
+                .padding(10)
+                .background(Color(.tertiarySystemGroupedBackground))
+                .clipShape(RoundedRectangle(cornerRadius: 12))
+                .padding(.horizontal)
+                .padding(.top, 8)
 
                 // Category pills
                 categoryBar
                     .padding(.top, 4)
 
-                // Hero — best image story
-                if let hero = visualItems.first {
-                    HeroCardView(item: hero)
-                        .onTapGesture {
-                            PreferenceEngine.shared.recordTap(on: hero)
-                            selectedItem = hero
-                        }
+                // ── Smart Briefing ──
+                let briefingItems = Array(qualityItems.prefix(5))
+                if briefingItems.count >= 3 {
+                    BriefingCardView(items: briefingItems, subtitle: currentMood.briefingSubtitle)
                         .padding(.horizontal)
                         .padding(.top, 16)
                 }
 
-                // Featured grid — next image-rich stories in 2-column layout
-                let featured = Array(visualItems.dropFirst().prefix(4))
-                if !featured.isEmpty {
-                    featuredGrid(featured)
-                        .padding(.top, 20)
-                }
+                // ── Tier 1: Top 3 big stories with More Coverage ──
+                let top = Array(qualityItems.prefix(3))
+                if !top.isEmpty {
+                    feedSection(title: currentMood.sectionTitle) {
+                        VStack(spacing: 16) {
+                            ForEach(top) { item in
+                                VStack(spacing: 0) {
+                                    StoryCardView(item: item, onDeepDive: item.relatedArticles.isEmpty ? nil : {
+                                        deepDiveItem = item
+                                    })
+                                        .onTapGesture {
+                                            PreferenceEngine.shared.recordTap(on: item)
+                                            ReadStateManager.shared.markRead(item)
+                                            selectedItem = item
+                                        }
 
-                // More stories with images
-                let moreVisual = Array(visualItems.dropFirst(5))
-                if !moreVisual.isEmpty {
-                    feedSection(title: "More Stories") {
-                        VStack(spacing: 10) {
-                            ForEach(moreVisual) { item in
-                                CompactRowView(item: item)
-                                    .onTapGesture {
-                                        PreferenceEngine.shared.recordTap(on: item)
-                                        selectedItem = item
+                                    if !item.relatedArticles.isEmpty {
+                                        MoreCoverageView(
+                                            articles: item.relatedArticles,
+                                            onTap: { related in
+                                                PreferenceEngine.shared.recordTap(on: related)
+                                                selectedItem = related
+                                            },
+                                            onDeepDive: {
+                                                deepDiveItem = item
+                                            }
+                                        )
                                     }
+                                }
                             }
                         }
                         .padding(.horizontal)
                     }
-                    .padding(.top, 20)
+                    .padding(.top, 16)
                 }
 
-                // Headlines — clean text-only list
-                if !textItems.isEmpty {
-                    feedSection(title: "Headlines") {
-                        VStack(spacing: 1) {
-                            ForEach(textItems) { item in
-                                HeadlineRowView(item: item)
-                                    .onTapGesture {
-                                        PreferenceEngine.shared.recordTap(on: item)
-                                        selectedItem = item
-                                    }
-                            }
-                        }
-                        .clipShape(RoundedRectangle(cornerRadius: 12))
-                        .padding(.horizontal)
-                    }
-                    .padding(.top, 20)
+                // ── Tier 2: Mixed layout — varied card sizes ──
+                let remaining = Array(qualityItems.dropFirst(3).prefix(12))
+                if !remaining.isEmpty {
+                    mixedLayoutSection(items: remaining)
+                        .padding(.top, 24)
                 }
             }
             .padding(.bottom, 20)
@@ -144,17 +271,69 @@ struct ContentView: View {
         }
     }
 
-    // MARK: - Featured Grid (2-column)
+    // MARK: - Mixed Layout (varied card sizes)
 
-    private func featuredGrid(_ items: [FeedItem]) -> some View {
-        let columns = [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)]
-        return LazyVGrid(columns: columns, spacing: 10) {
-            ForEach(items) { item in
-                FeaturedCardView(item: item)
-                    .onTapGesture {
-                        PreferenceEngine.shared.recordTap(on: item)
-                        selectedItem = item
+    /// Layout blocks for the mixed section — precomputed from item list.
+    private enum LayoutBlock: Identifiable {
+        case pair(FeedItem, FeedItem)
+        case wide(FeedItem)
+
+        var id: String {
+            switch self {
+            case .pair(let a, let b): return "\(a.id)-\(b.id)"
+            case .wide(let a): return a.id.uuidString
+            }
+        }
+    }
+
+    private func buildLayoutBlocks(_ items: [FeedItem]) -> [LayoutBlock] {
+        var blocks: [LayoutBlock] = []
+        var i = 0
+        var blockCount = 0
+        // Pattern: pair → pair → wide → pair → pair → wide …
+        while i < items.count {
+            let patternPos = blockCount % 3
+            if patternPos < 2 && i + 1 < items.count {
+                blocks.append(.pair(items[i], items[i + 1]))
+                i += 2
+            } else {
+                blocks.append(.wide(items[i]))
+                i += 1
+            }
+            blockCount += 1
+        }
+        return blocks
+    }
+
+    private func mixedLayoutSection(items: [FeedItem]) -> some View {
+        let blocks = buildLayoutBlocks(items)
+
+        return VStack(spacing: 14) {
+            ForEach(blocks) { block in
+                switch block {
+                case .pair(let a, let b):
+                    HStack(alignment: .top, spacing: 12) {
+                        MediumCardView(item: a)
+                            .onTapGesture {
+                                PreferenceEngine.shared.recordTap(on: a)
+                                ReadStateManager.shared.markRead(a)
+                                selectedItem = a
+                            }
+                        MediumCardView(item: b)
+                            .onTapGesture {
+                                PreferenceEngine.shared.recordTap(on: b)
+                                ReadStateManager.shared.markRead(b)
+                                selectedItem = b
+                            }
                     }
+                case .wide(let item):
+                    WideRowView(item: item)
+                        .onTapGesture {
+                            PreferenceEngine.shared.recordTap(on: item)
+                            ReadStateManager.shared.markRead(item)
+                            selectedItem = item
+                        }
+                }
             }
         }
         .padding(.horizontal)
@@ -199,6 +378,119 @@ struct ContentView: View {
                 .padding(.horizontal)
             content()
         }
+    }
+}
+
+// MARK: - Bookmarks Tab
+
+struct BookmarksTab: View {
+    @ObservedObject var parser: FeedParser
+    @ObservedObject private var bookmarks = BookmarkManager.shared
+    @State private var selectedItem: FeedItem?
+
+    private var savedItems: [FeedItem] {
+        parser.items.filter { bookmarks.isBookmarked($0) }
+    }
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                if savedItems.isEmpty {
+                    VStack(spacing: 16) {
+                        Image(systemName: "bookmark")
+                            .font(.system(size: 48))
+                            .foregroundColor(.secondary.opacity(0.4))
+                        Text("No saved articles yet")
+                            .font(.headline)
+                            .foregroundColor(.secondary)
+                        Text("Tap the bookmark icon on any story to save it here.")
+                            .font(.subheadline)
+                            .foregroundColor(.secondary.opacity(0.7))
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal, 40)
+                    }
+                } else {
+                    ScrollView {
+                        LazyVStack(spacing: 12) {
+                            ForEach(savedItems) { item in
+                                SavedArticleRow(item: item)
+                                    .onTapGesture {
+                                        selectedItem = item
+                                    }
+                            }
+                        }
+                        .padding()
+                    }
+                }
+            }
+            .background(Color(.systemGroupedBackground))
+            .navigationTitle("Saved")
+            .fullScreenCover(item: $selectedItem) { item in
+                ArticleReaderView(item: item)
+            }
+        }
+    }
+}
+
+struct SavedArticleRow: View {
+    let item: FeedItem
+
+    var body: some View {
+        HStack(spacing: 14) {
+            // Image
+            Color(.tertiarySystemGroupedBackground)
+                .frame(width: 80, height: 80)
+                .overlay(
+                    AsyncImage(url: item.imageURL) { phase in
+                        switch phase {
+                        case .success(let image):
+                            image.resizable().scaledToFill()
+                        default:
+                            EmptyView()
+                        }
+                    }
+                )
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+
+            VStack(alignment: .leading, spacing: 5) {
+                Text(item.source)
+                    .font(.caption.weight(.bold))
+                    .foregroundColor(.arcaOrange)
+
+                Text(item.title)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundColor(.primary)
+                    .lineLimit(2)
+
+                HStack(spacing: 8) {
+                    Text(item.pubDate, style: .relative)
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+
+                    Spacer()
+
+                    Button {
+                        withAnimation {
+                            BookmarkManager.shared.toggle(item)
+                        }
+                    } label: {
+                        Image(systemName: "bookmark.fill")
+                            .font(.caption)
+                            .foregroundColor(.arcaOrange)
+                    }
+                    .buttonStyle(.plain)
+
+                    ShareLink(item: item.url) {
+                        Image(systemName: "square.and.arrow.up")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                }
+            }
+        }
+        .padding(12)
+        .background(Color(.secondarySystemGroupedBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 14))
     }
 }
 
@@ -408,144 +700,410 @@ struct ArcaLogoView: View {
     }
 }
 
-// MARK: - Hero Card
+// MARK: - Smart Briefing Card
 
-struct HeroCardView: View {
+struct BriefingCardView: View {
+    let items: [FeedItem]
+    var subtitle: String = "Your daily briefing"
+
+    private var greeting: String {
+        let hour = Calendar.current.component(.hour, from: Date())
+        if hour < 12 { return "Good Morning" }
+        if hour < 17 { return "Good Afternoon" }
+        return "Good Evening"
+    }
+
+    private var trendingCount: Int {
+        items.filter { $0.isTrending }.count
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            // Header
+            HStack(spacing: 8) {
+                // Arca mini logo
+                ArcaArchShape()
+                    .stroke(
+                        LinearGradient(
+                            colors: [.arcaOrange, .arcaRed],
+                            startPoint: .leading,
+                            endPoint: .trailing
+                        ),
+                        style: StrokeStyle(lineWidth: 2.5, lineCap: .round)
+                    )
+                    .frame(width: 16, height: 20)
+
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(greeting)
+                        .font(.subheadline.weight(.bold))
+                        .foregroundColor(.primary)
+                    Text(subtitle)
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
+
+                Spacer()
+
+                Text(Date(), format: .dateTime.weekday(.wide).month(.abbreviated).day())
+                    .font(.caption2.weight(.medium))
+                    .foregroundColor(.secondary)
+            }
+
+            Divider()
+
+            // Summary bullets
+            VStack(alignment: .leading, spacing: 10) {
+                ForEach(Array(items.prefix(5).enumerated()), id: \.element.id) { idx, item in
+                    HStack(alignment: .top, spacing: 10) {
+                        Text("\(idx + 1)")
+                            .font(.caption.weight(.heavy))
+                            .foregroundColor(.white)
+                            .frame(width: 20, height: 20)
+                            .background(
+                                idx == 0 ? Color.arcaRed : Color.arcaOrange.opacity(0.8)
+                            )
+                            .clipShape(Circle())
+
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(item.title)
+                                .font(.caption.weight(.semibold))
+                                .foregroundColor(.primary)
+                                .lineLimit(2)
+
+                            HStack(spacing: 4) {
+                                Text(item.source)
+                                    .font(.caption2.weight(.medium))
+                                    .foregroundColor(.arcaOrange)
+
+                                if item.isTrending {
+                                    HStack(spacing: 2) {
+                                        Image(systemName: "flame.fill")
+                                            .font(.system(size: 8))
+                                        Text("Trending")
+                                            .font(.system(size: 9, weight: .bold))
+                                    }
+                                    .foregroundColor(.arcaRed)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Footer
+            if trendingCount > 0 {
+                HStack(spacing: 4) {
+                    Image(systemName: "flame.fill")
+                        .font(.caption2)
+                        .foregroundColor(.arcaRed)
+                    Text("\(trendingCount) trending \(trendingCount == 1 ? "story" : "stories") right now")
+                        .font(.caption2.weight(.medium))
+                        .foregroundColor(.secondary)
+                }
+            }
+        }
+        .padding(16)
+        .background(Color(.secondarySystemGroupedBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 16))
+        .overlay(
+            RoundedRectangle(cornerRadius: 16)
+                .strokeBorder(
+                    LinearGradient(
+                        colors: [.arcaOrange.opacity(0.3), .arcaRed.opacity(0.15)],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    ),
+                    lineWidth: 1
+                )
+        )
+    }
+}
+
+// MARK: - Story Card (full-width, Apple News style)
+
+struct StoryCardView: View {
     let item: FeedItem
+    var onDeepDive: (() -> Void)? = nil
+    @ObservedObject private var bookmarks = BookmarkManager.shared
+    @ObservedObject private var readState = ReadStateManager.shared
     @State private var isLiked = false
+
+    private var isBookmarked: Bool { bookmarks.isBookmarked(item) }
+    private var isRead: Bool { readState.isRead(item) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            // Image
-            AsyncImage(url: item.imageURL) { phase in
-                switch phase {
-                case .success(let image):
-                    image
-                        .resizable()
-                        .aspectRatio(contentMode: .fill)
-                        .frame(height: 200)
-                        .clipped()
-                case .empty:
-                    if item.imageURL != nil {
-                        ZStack {
-                            heroPlaceholder
-                            ProgressView()
-                                .tint(.arcaOrange)
+            // Image — overlay pattern prevents .fill from blowing out layout
+            Color(.tertiarySystemGroupedBackground)
+                .frame(height: 200)
+                .overlay(
+                    AsyncImage(url: item.imageURL) { phase in
+                        switch phase {
+                        case .success(let image):
+                            image.resizable().scaledToFill()
+                        case .empty:
+                            ProgressView().tint(.arcaOrange)
+                        default:
+                            EmptyView()
                         }
-                    } else {
-                        heroPlaceholder
                     }
-                case .failure:
-                    heroPlaceholder
-                @unknown default:
-                    heroPlaceholder
-                }
-            }
-            .frame(height: 200)
-            .frame(maxWidth: .infinity)
+                )
+                .clipped()
 
-            VStack(alignment: .leading, spacing: 8) {
-                // Source pill + time + like
-                HStack {
-                    Text(item.source)
-                        .font(.caption2.weight(.bold))
+            // Content
+            VStack(alignment: .leading, spacing: 10) {
+                // Badges + source + time
+                HStack(spacing: 6) {
+                    if item.isTrending {
+                        HStack(spacing: 3) {
+                            Image(systemName: "flame.fill")
+                                .font(.caption2)
+                            Text("TRENDING")
+                                .font(.caption2.weight(.heavy))
+                                .tracking(0.3)
+                        }
                         .foregroundColor(.white)
                         .padding(.horizontal, 8)
                         .padding(.vertical, 3)
-                        .background(Color.arcaOrange)
+                        .background(Color.arcaRed)
                         .clipShape(Capsule())
+                    }
+
+                    if item.sourceCount > 1 {
+                        Text("\(item.sourceCount) sources")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundColor(.arcaOrange)
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 3)
+                            .background(Color.arcaOrange.opacity(0.12))
+                            .clipShape(Capsule())
+                    }
+
+                    Text(item.source)
+                        .font(.caption.weight(.bold))
+                        .foregroundColor(.arcaOrange)
+
+                    Text("·")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+
+                    Text(item.pubDate, style: .relative)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+
+                    Text("·")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+
+                    Text("\(item.readingTime) min read")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
 
                     Spacer()
 
-                    Text(item.pubDate, formatter: Self.relativeFormatter)
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
+                    // Action buttons
+                    HStack(spacing: 14) {
+                        Button {
+                            let impact = UIImpactFeedbackGenerator(style: .light)
+                            impact.impactOccurred()
+                            withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) {
+                                isLiked.toggle()
+                            }
+                            if isLiked {
+                                PreferenceEngine.shared.recordLike(on: item)
+                            }
+                        } label: {
+                            Image(systemName: isLiked ? "heart.fill" : "heart")
+                                .foregroundColor(isLiked ? .arcaRed : .secondary.opacity(0.4))
+                                .scaleEffect(isLiked ? 1.15 : 1.0)
+                        }
+                        .buttonStyle(.plain)
 
-                    Button {
-                        withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) {
-                            isLiked.toggle()
+                        Button {
+                            let impact = UIImpactFeedbackGenerator(style: .medium)
+                            impact.impactOccurred()
+                            bookmarks.toggle(item)
+                        } label: {
+                            Image(systemName: isBookmarked ? "bookmark.fill" : "bookmark")
+                                .foregroundColor(isBookmarked ? .arcaOrange : .secondary.opacity(0.4))
                         }
-                        if isLiked {
-                            PreferenceEngine.shared.recordLike(on: item)
+                        .buttonStyle(.plain)
+
+                        ShareLink(item: item.url) {
+                            Image(systemName: "square.and.arrow.up")
+                                .foregroundColor(.secondary.opacity(0.4))
                         }
-                    } label: {
-                        Image(systemName: isLiked ? "heart.fill" : "heart")
-                            .font(.subheadline)
-                            .foregroundColor(isLiked ? .arcaRed : .secondary.opacity(0.5))
-                            .scaleEffect(isLiked ? 1.15 : 1.0)
                     }
-                    .buttonStyle(.plain)
+                    .font(.subheadline)
                 }
 
-                Text(item.title)
-                    .font(.headline.weight(.bold))
-                    .foregroundColor(.primary)
-                    .lineLimit(3)
+                // Title
+                HStack(alignment: .top, spacing: 6) {
+                    Text(item.title)
+                        .font(.headline.weight(.bold))
+                        .foregroundColor(isRead ? .secondary : .primary)
+                        .lineLimit(3)
+                        .fixedSize(horizontal: false, vertical: true)
 
+                    if isRead {
+                        Text("READ")
+                            .font(.system(size: 8, weight: .heavy))
+                            .foregroundColor(.secondary)
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 2)
+                            .background(Color.secondary.opacity(0.15))
+                            .clipShape(Capsule())
+                            .padding(.top, 3)
+                    }
+                }
+
+                // Description
                 if !item.itemDescription.isEmpty {
                     Text(item.itemDescription)
                         .font(.subheadline)
                         .foregroundColor(.secondary)
                         .lineLimit(2)
                 }
+
+                // Deep Dive button
+                if let onDeepDive = onDeepDive {
+                    Button(action: onDeepDive) {
+                        HStack(spacing: 4) {
+                            Image(systemName: "rectangle.stack.fill")
+                                .font(.caption2)
+                            Text("Deep Dive — Compare \(item.sourceCount) sources")
+                                .font(.caption.weight(.semibold))
+                        }
+                        .foregroundColor(.arcaOrange)
+                        .padding(.top, 2)
+                    }
+                    .buttonStyle(.plain)
+                }
             }
-            .padding(14)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
         }
         .background(Color(.secondarySystemGroupedBackground))
         .clipShape(RoundedRectangle(cornerRadius: 16))
+        .opacity(isRead ? 0.75 : 1.0)
         .onAppear {
             isLiked = PreferenceEngine.shared.isLiked(item)
         }
     }
-
-    private var heroPlaceholder: some View {
-        ZStack {
-            LinearGradient(
-                colors: [.arcaOrange.opacity(0.15), .arcaRed.opacity(0.1)],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-            ProgressView()
-                .tint(.arcaOrange)
-        }
-        .frame(height: 200)
-    }
-
-    private static let relativeFormatter: RelativeDateTimeFormatter = {
-        let f = RelativeDateTimeFormatter()
-        f.unitsStyle = .abbreviated
-        return f
-    }()
 }
 
-// MARK: - Featured Card (2-column grid)
+// MARK: - More Coverage (grouped duplicate stories)
 
-struct FeaturedCardView: View {
+struct MoreCoverageView: View {
+    let articles: [FeedItem]
+    let onTap: (FeedItem) -> Void
+    var onDeepDive: (() -> Void)? = nil
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            // Header
+            HStack(spacing: 6) {
+                Text("MORE COVERAGE")
+                    .font(.caption2.weight(.heavy))
+                    .foregroundColor(.secondary)
+                    .tracking(0.5)
+
+                Rectangle()
+                    .fill(Color(.separator))
+                    .frame(height: 0.5)
+
+                if let onDeepDive = onDeepDive {
+                    Button(action: onDeepDive) {
+                        HStack(spacing: 3) {
+                            Image(systemName: "rectangle.stack.fill")
+                                .font(.system(size: 9))
+                            Text("Deep Dive")
+                                .font(.caption2.weight(.bold))
+                        }
+                        .foregroundColor(.arcaOrange)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 14)
+            .padding(.top, 10)
+            .padding(.bottom, 6)
+
+            // Related article links
+            ForEach(articles) { article in
+                Button {
+                    onTap(article)
+                } label: {
+                    VStack(alignment: .leading, spacing: 2) {
+                        if article.id != articles.first?.id {
+                            Divider()
+                                .padding(.leading, 14)
+                        }
+
+                        HStack(alignment: .top, spacing: 8) {
+                            Text(article.source)
+                                .font(.caption.weight(.bold))
+                                .foregroundColor(.arcaOrange)
+                                .frame(width: 90, alignment: .leading)
+                                .lineLimit(1)
+
+                            Text(article.title)
+                                .font(.subheadline.weight(.medium))
+                                .foregroundColor(.primary)
+                                .lineLimit(2)
+                                .multilineTextAlignment(.leading)
+                        }
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 8)
+                    }
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.bottom, 10)
+        .background(Color(.secondarySystemGroupedBackground))
+        .clipShape(
+            .rect(
+                topLeadingRadius: 0,
+                bottomLeadingRadius: 16,
+                bottomTrailingRadius: 16,
+                topTrailingRadius: 0
+            )
+        )
+        .padding(.top, -8) // tuck under the card above
+    }
+}
+
+// MARK: - Medium Card (2-column tile)
+
+struct MediumCardView: View {
     let item: FeedItem
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            AsyncImage(url: item.imageURL) { phase in
-                switch phase {
-                case .success(let image):
-                    image
-                        .resizable()
-                        .aspectRatio(contentMode: .fill)
-                        .frame(height: 110)
-                        .clipped()
-                default:
-                    Color(.tertiarySystemGroupedBackground)
-                        .frame(height: 110)
-                }
-            }
-            .frame(height: 110)
-            .frame(maxWidth: .infinity)
+            // Image — overlay pattern prevents .fill from blowing out layout
+            Color(.tertiarySystemGroupedBackground)
+                .frame(height: 110)
+                .overlay(
+                    AsyncImage(url: item.imageURL) { phase in
+                        switch phase {
+                        case .success(let image):
+                            image.resizable().scaledToFill()
+                        default:
+                            EmptyView()
+                        }
+                    }
+                )
+                .clipped()
 
-            VStack(alignment: .leading, spacing: 4) {
+            // Text — fixed height so all pairs match
+            VStack(alignment: .leading, spacing: 5) {
                 Text(item.title)
                     .font(.caption.weight(.semibold))
                     .foregroundColor(.primary)
-                    .lineLimit(3)
+                    .lineLimit(2)
+
+                Spacer(minLength: 0)
 
                 HStack(spacing: 3) {
                     Text(item.source)
@@ -554,166 +1112,62 @@ struct FeaturedCardView: View {
                     Text("·")
                         .font(.caption2)
                         .foregroundColor(.secondary)
-                    Text(item.pubDate, formatter: Self.relativeFormatter)
+                    Text(item.pubDate, style: .relative)
                         .font(.caption2)
                         .foregroundColor(.secondary)
                 }
             }
             .padding(10)
+            .frame(height: 76)
         }
         .background(Color(.secondarySystemGroupedBackground))
         .clipShape(RoundedRectangle(cornerRadius: 12))
     }
-
-    private static let relativeFormatter: RelativeDateTimeFormatter = {
-        let f = RelativeDateTimeFormatter()
-        f.unitsStyle = .abbreviated
-        return f
-    }()
 }
 
-// MARK: - Headline Row (text-only, no thumbnail)
+// MARK: - Wide Row (full-width, text left + image right)
 
-struct HeadlineRowView: View {
+struct WideRowView: View {
     let item: FeedItem
-    @State private var isLiked = false
 
     var body: some View {
-        HStack(spacing: 12) {
-            // Source color bar
-            RoundedRectangle(cornerRadius: 2)
-                .fill(Color.arcaOrange)
-                .frame(width: 3, height: 36)
+        HStack(spacing: 14) {
+            // Text content
+            VStack(alignment: .leading, spacing: 6) {
+                Text(item.source)
+                    .font(.caption.weight(.bold))
+                    .foregroundColor(.arcaOrange)
 
-            VStack(alignment: .leading, spacing: 3) {
                 Text(item.title)
-                    .font(.subheadline.weight(.medium))
+                    .font(.subheadline.weight(.bold))
                     .foregroundColor(.primary)
-                    .lineLimit(2)
+                    .lineLimit(3)
+                    .fixedSize(horizontal: false, vertical: true)
 
-                HStack(spacing: 4) {
-                    Text(item.source)
-                        .font(.caption2.weight(.medium))
-                        .foregroundColor(.arcaOrange)
-                    Text("·")
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
-                    Text(item.pubDate, formatter: Self.relativeFormatter)
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
-                }
+                Text(item.pubDate, style: .relative)
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
             }
 
             Spacer(minLength: 0)
 
-            Button {
-                withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) {
-                    isLiked.toggle()
-                }
-                if isLiked {
-                    PreferenceEngine.shared.recordLike(on: item)
-                }
-            } label: {
-                Image(systemName: isLiked ? "heart.fill" : "heart")
-                    .font(.caption)
-                    .foregroundColor(isLiked ? .arcaRed : .secondary.opacity(0.4))
-                    .scaleEffect(isLiked ? 1.15 : 1.0)
-            }
-            .buttonStyle(.plain)
+            // Image
+            Color(.tertiarySystemGroupedBackground)
+                .frame(width: 120, height: 90)
+                .overlay(
+                    AsyncImage(url: item.imageURL) { phase in
+                        switch phase {
+                        case .success(let image):
+                            image.resizable().scaledToFill()
+                        default:
+                            EmptyView()
+                        }
+                    }
+                )
+                .clipShape(RoundedRectangle(cornerRadius: 10))
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 12)
+        .padding(14)
         .background(Color(.secondarySystemGroupedBackground))
-        .onAppear {
-            isLiked = PreferenceEngine.shared.isLiked(item)
-        }
+        .clipShape(RoundedRectangle(cornerRadius: 14))
     }
-
-    private static let relativeFormatter: RelativeDateTimeFormatter = {
-        let f = RelativeDateTimeFormatter()
-        f.unitsStyle = .abbreviated
-        return f
-    }()
-}
-
-// MARK: - Compact Row (Category Sections)
-
-struct CompactRowView: View {
-    let item: FeedItem
-    @State private var isLiked = false
-
-    var body: some View {
-        HStack(alignment: .top, spacing: 12) {
-            AsyncImage(url: item.imageURL) { phase in
-                switch phase {
-                case .success(let image):
-                    image
-                        .resizable()
-                        .aspectRatio(contentMode: .fill)
-                        .frame(width: 80, height: 64)
-                        .clipped()
-                case .failure:
-                    Color(.tertiarySystemGroupedBackground)
-                case .empty:
-                    ProgressView()
-                        .tint(.arcaOrange)
-                        .frame(width: 80, height: 64)
-                @unknown default:
-                    Color(.tertiarySystemGroupedBackground)
-                }
-            }
-            .frame(width: 80, height: 64)
-            .clipShape(RoundedRectangle(cornerRadius: 8))
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text(item.title)
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundColor(.primary)
-                    .lineLimit(2)
-
-                HStack(spacing: 4) {
-                    Text(item.source)
-                        .font(.caption2.weight(.medium))
-                        .foregroundColor(.arcaOrange)
-                    Text("·")
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
-                    Text(item.pubDate, formatter: Self.relativeFormatter)
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
-                }
-            }
-
-            Spacer(minLength: 0)
-
-            Button {
-                withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) {
-                    isLiked.toggle()
-                }
-                if isLiked {
-                    PreferenceEngine.shared.recordLike(on: item)
-                }
-            } label: {
-                Image(systemName: isLiked ? "heart.fill" : "heart")
-                    .font(.subheadline)
-                    .foregroundColor(isLiked ? .arcaRed : .secondary.opacity(0.5))
-                    .scaleEffect(isLiked ? 1.15 : 1.0)
-            }
-            .buttonStyle(.plain)
-            .padding(.top, 4)
-        }
-        .padding(10)
-        .background(Color(.secondarySystemGroupedBackground))
-        .clipShape(RoundedRectangle(cornerRadius: 12))
-        .onAppear {
-            isLiked = PreferenceEngine.shared.isLiked(item)
-        }
-    }
-
-    private static let relativeFormatter: RelativeDateTimeFormatter = {
-        let f = RelativeDateTimeFormatter()
-        f.unitsStyle = .abbreviated
-        return f
-    }()
-
 }
