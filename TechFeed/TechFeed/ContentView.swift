@@ -801,6 +801,44 @@ private struct ShortEmbedWebView: UIViewRepresentable {
         config.allowsInlineMediaPlayback = true
         config.mediaTypesRequiringUserActionForPlayback = []
 
+        // Inject CSS to hide YouTube's UI chrome — keep only the video player
+        let hideChrome = WKUserScript(source: """
+        (function() {
+            var style = document.createElement('style');
+            style.textContent = `
+                /* Hide everything except the video player */
+                #related, #comments, #below, #secondary,
+                ytm-pivot-bar-renderer, ytm-app-header-renderer,
+                .ytm-autonav-bar, .watch-below-the-player,
+                .related-chips-slot-wrapper, ytm-item-section-renderer,
+                .slim-video-metadata-header, .slim-video-action-bar-actions,
+                ytm-engagement-panel-section-list-renderer,
+                #header, ytm-bottom-sheet-renderer, .player-controls-top,
+                .ytm-related-videos-renderer, ytm-comments-entry-point-header-renderer,
+                ytm-comment-thread-renderer, .watch-below-the-player *,
+                [class*="related"], [class*="comment"],
+                .slim-video-information-renderer .slim-video-metadata-title-and-badges,
+                .menu-renderer, ytm-menu-renderer,
+                ytm-slim-video-action-bar-renderer {
+                    display: none !important;
+                }
+                /* Make the video player fill the screen */
+                .player-container, .html5-video-player, video,
+                #player, ytm-player-microformat-renderer {
+                    position: fixed !important;
+                    top: 0 !important; left: 0 !important;
+                    width: 100vw !important; height: 100vh !important;
+                    max-width: none !important; max-height: none !important;
+                    z-index: 9999 !important;
+                }
+                body { background: #000 !important; overflow: hidden !important; }
+                html { background: #000 !important; }
+            `;
+            document.documentElement.appendChild(style);
+        })();
+        """, injectionTime: .atDocumentEnd, forMainFrameOnly: true)
+        config.userContentController.addUserScript(hideChrome)
+
         let webView = WKWebView(frame: .zero, configuration: config)
         webView.isOpaque = false
         webView.backgroundColor = .black
@@ -839,11 +877,14 @@ private struct ShortEmbedWebView: UIViewRepresentable {
         })
         guard !safeID.isEmpty else { return }
 
-        // Load the YouTube embed URL directly — loadHTMLString with an iframe
-        // triggers error 152 because YouTube's embed player rejects the
-        // synthetic origin from a local HTML page.
-        let embedURL = URL(string: "https://www.youtube.com/embed/\(safeID)?autoplay=1&playsinline=1&mute=1&controls=1&rel=0&modestbranding=1&loop=1&playlist=\(safeID)")!
-        webView.load(URLRequest(url: embedURL))
+        // Load the YouTube mobile watch page directly. The /embed/ endpoint
+        // requires a valid Referer header that WKWebView doesn't reliably send,
+        // causing error 152. The mobile watch page works without it and gives
+        // us the native YouTube player with full controls.
+        let watchURL = URL(string: "https://m.youtube.com/watch?v=\(safeID)")!
+        var request = URLRequest(url: watchURL)
+        request.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1", forHTTPHeaderField: "User-Agent")
+        webView.load(request)
     }
 
     class Coordinator {
