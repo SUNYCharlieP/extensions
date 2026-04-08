@@ -10,6 +10,7 @@ struct FeedItem: Identifiable {
     var category: String
     let pubDate: Date
     var preferenceScore: Double = 0
+    var isVideo: Bool = false
     /// Other sources covering the same story (populated by dedup grouping).
     var relatedArticles: [FeedItem] = []
 
@@ -53,6 +54,7 @@ struct RSSFeed {
     let name: String
     let url: String
     let category: String
+    var isVideo: Bool = false
 
     static let allFeeds: [RSSFeed] = [
         // Apple
@@ -71,5 +73,11 @@ struct RSSFeed {
         RSSFeed(name: "Hacker News", url: "https://news.ycombinator.com/rss", category: "Hacker News"),
         // Security
         RSSFeed(name: "Krebs on Security", url: "https://krebsonsecurity.com/feed/", category: "Security"),
+        // Tech Videos (YouTube RSS)
+        RSSFeed(name: "MKBHD", url: "https://www.youtube.com/feeds/videos.xml?channel_id=UCBJycsmduvYEL83R_U4JriQ", category: "Videos", isVideo: true),
+        RSSFeed(name: "Linus Tech Tips", url: "https://www.youtube.com/feeds/videos.xml?channel_id=UCXuqSBlHAE6Xw-yeJA0Tunw", category: "Videos", isVideo: true),
+        RSSFeed(name: "The Verge (Video)", url: "https://www.youtube.com/feeds/videos.xml?channel_id=UCddiUEpeqJcYeBxX1IVBKvQ", category: "Videos", isVideo: true),
+        RSSFeed(name: "Fireship", url: "https://www.youtube.com/feeds/videos.xml?channel_id=UCsBjURrPoezykLs9EqgamOA", category: "Videos", isVideo: true),
+        RSSFeed(name: "Dave Lee", url: "https://www.youtube.com/feeds/videos.xml?channel_id=UCVYamHKEnwaVx3zv4BNiRDA", category: "Videos", isVideo: true),
     ]
 }

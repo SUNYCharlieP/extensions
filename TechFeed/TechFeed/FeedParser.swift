@@ -26,7 +26,7 @@ class FeedParser: ObservableObject {
                 defer { group.leave() }
                 guard let self = self, let data = data, error == nil else { return }
 
-                let delegate = FeedXMLParserDelegate(sourceName: feed.name, category: feed.category)
+                let delegate = FeedXMLParserDelegate(sourceName: feed.name, category: feed.category, isVideo: feed.isVideo)
                 let parser = XMLParser(data: data)
                 parser.delegate = delegate
                 parser.parse()
@@ -88,7 +88,7 @@ class FeedParser: ObservableObject {
                     defer { group.leave() }
                     guard let self = self, let data = data, error == nil else { return }
 
-                    let delegate = FeedXMLParserDelegate(sourceName: feed.name, category: feed.category)
+                    let delegate = FeedXMLParserDelegate(sourceName: feed.name, category: feed.category, isVideo: feed.isVideo)
                     let parser = XMLParser(data: data)
                     parser.delegate = delegate
                     parser.parse()
@@ -563,6 +563,7 @@ private enum FeedFormat {
 private class FeedXMLParserDelegate: NSObject, XMLParserDelegate {
     let sourceName: String
     let category: String
+    let isVideo: Bool
     var items: [FeedItem] = []
 
     private var feedFormat: FeedFormat = .unknown
@@ -575,9 +576,10 @@ private class FeedXMLParserDelegate: NSObject, XMLParserDelegate {
     private var currentImageURL = ""
     private var currentContentEncoded = ""
 
-    init(sourceName: String, category: String) {
+    init(sourceName: String, category: String, isVideo: Bool = false) {
         self.sourceName = sourceName
         self.category = category
+        self.isVideo = isVideo
         super.init()
     }
 
@@ -669,7 +671,7 @@ private class FeedXMLParserDelegate: NSObject, XMLParserDelegate {
             let pubDate = DateParsing.parseDate(currentPubDate.trimmingCharacters(in: .whitespacesAndNewlines))
             let imageURL = imageURLString.isEmpty ? nil : URL(string: imageURLString)
 
-            let item = FeedItem(
+            var item = FeedItem(
                 title: title,
                 itemDescription: desc,
                 url: url,
@@ -678,6 +680,7 @@ private class FeedXMLParserDelegate: NSObject, XMLParserDelegate {
                 category: category,
                 pubDate: pubDate
             )
+            item.isVideo = isVideo
             items.append(item)
         }
 

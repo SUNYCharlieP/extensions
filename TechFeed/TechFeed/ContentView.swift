@@ -8,42 +8,66 @@ struct ContentView: View {
     @StateObject private var sourceManager = SourceManager.shared
     @State private var selectedTab = 0
     @State private var showOnboarding = false
+    @State private var showLaunch = true
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        Group {
-            if showOnboarding {
-                OnboardingView {
-                    withAnimation {
-                        showOnboarding = false
+        ZStack {
+            Group {
+                if showOnboarding {
+                    OnboardingView {
+                        withAnimation {
+                            showOnboarding = false
+                        }
+                        parser.fetchAllFeeds()
                     }
-                    parser.fetchAllFeeds()
-                }
-            } else {
-                TabView(selection: $selectedTab) {
-                    FeedTab(parser: parser)
-                        .tabItem {
-                            Image(systemName: "newspaper.fill")
-                            Text("Feed")
-                        }
-                        .tag(0)
+                } else {
+                    TabView(selection: $selectedTab) {
+                        FeedTab(parser: parser)
+                            .tabItem {
+                                Image(systemName: "newspaper.fill")
+                                Text("Feed")
+                            }
+                            .tag(0)
 
-                    BookmarksTab(parser: parser)
-                        .tabItem {
-                            Image(systemName: "bookmark.fill")
-                            Text("Saved")
-                        }
-                        .tag(1)
+                        VideosTab(parser: parser)
+                            .tabItem {
+                                Image(systemName: "play.rectangle.fill")
+                                Text("Videos")
+                            }
+                            .tag(1)
+
+                        BookmarksTab(parser: parser)
+                            .tabItem {
+                                Image(systemName: "bookmark.fill")
+                                Text("Saved")
+                            }
+                            .tag(2)
+                    }
+                    .tint(.arcaOrange)
+                    .onAppear {
+                        parser.fetchAllFeeds()
+                        NotificationManager.shared.requestPermission()
+                    }
                 }
-                .tint(.arcaOrange)
-                .onAppear {
-                    parser.fetchAllFeeds()
-                    NotificationManager.shared.requestPermission()
-                }
+            }
+            .opacity(showLaunch ? 0 : 1)
+
+            if showLaunch {
+                LaunchScreenView()
+                    .transition(.opacity)
             }
         }
         .onAppear {
             if !sourceManager.hasOnboarded {
                 showOnboarding = true
+            }
+            // Dismiss launch screen
+            let delay: Double = reduceMotion ? 0.5 : 1.5
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                withAnimation(.easeOut(duration: 0.4)) {
+                    showLaunch = false
+                }
             }
         }
     }
@@ -59,8 +83,12 @@ struct FeedTab: View {
     @State private var searchText = ""
     @State private var showSettings = false
     @State private var showDigest = false
+    @Environment(\.horizontalSizeClass) private var sizeClass
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    private let categories = ["Top Picks", "Apple", "General Tech", "Hacker News", "Security", "Science"]
+    private let categories = ["Top Picks", "Apple", "General Tech", "Hacker News", "Security", "Science", "Videos"]
+
+    private var isIPad: Bool { sizeClass == .regular }
 
     var body: some View {
         ZStack(alignment: .top) {
@@ -189,6 +217,26 @@ struct FeedTab: View {
                 // Gradient header
                 arcaHeader
 
+                // Branded refresh indicator
+                if parser.isLoading && !parser.items.isEmpty {
+                    HStack(spacing: 8) {
+                        ArcaArchShape()
+                            .trim(from: 0, to: 0.6)
+                            .stroke(
+                                LinearGradient(colors: [.arcaOrange, .arcaRed], startPoint: .leading, endPoint: .trailing),
+                                style: StrokeStyle(lineWidth: 2.5, lineCap: .round)
+                            )
+                            .frame(width: 18, height: 22)
+                            .rotationEffect(.degrees(reduceMotion ? 0 : 360))
+                            .animation(reduceMotion ? nil : .linear(duration: 1.2).repeatForever(autoreverses: false), value: parser.isLoading)
+                        Text("Refreshing…")
+                            .font(.caption.weight(.medium))
+                            .foregroundColor(.secondary)
+                    }
+                    .padding(.vertical, 8)
+                    .transition(.opacity)
+                }
+
                 // Search bar
                 HStack(spacing: 10) {
                     Image(systemName: "magnifyingglass")
@@ -233,6 +281,7 @@ struct FeedTab: View {
                                     })
                                         .onTapGesture {
                                             PreferenceEngine.shared.recordTap(on: item)
+                                            ReadingStreakManager.shared.recordRead()
                                             ReadStateManager.shared.markRead(item)
                                             selectedItem = item
                                         }
@@ -276,11 +325,13 @@ struct FeedTab: View {
     /// Layout blocks for the mixed section — precomputed from item list.
     private enum LayoutBlock: Identifiable {
         case pair(FeedItem, FeedItem)
+        case triple(FeedItem, FeedItem, FeedItem)
         case wide(FeedItem)
 
         var id: String {
             switch self {
             case .pair(let a, let b): return "\(a.id)-\(b.id)"
+            case .triple(let a, let b, let c): return "\(a.id)-\(b.id)-\(c.id)"
             case .wide(let a): return a.id.uuidString
             }
         }
@@ -290,7 +341,26 @@ struct FeedTab: View {
         var blocks: [LayoutBlock] = []
         var i = 0
         var blockCount = 0
-        // Pattern: pair → pair → wide → pair → pair → wide …
+
+        // iPad: use 3-column grid; iPhone: pair → pair → wide pattern
+        if isIPad {
+            while i < items.count {
+                if i + 2 < items.count {
+                    blocks.append(.triple(items[i], items[i + 1], items[i + 2]))
+                    i += 3
+                } else if i + 1 < items.count {
+                    blocks.append(.pair(items[i], items[i + 1]))
+                    i += 2
+                } else {
+                    blocks.append(.wide(items[i]))
+                    i += 1
+                }
+                blockCount += 1
+            }
+            return blocks
+        }
+
+        // iPhone pattern: pair → pair → wide
         while i < items.count {
             let patternPos = blockCount % 3
             if patternPos < 2 && i + 1 < items.count {
@@ -305,6 +375,13 @@ struct FeedTab: View {
         return blocks
     }
 
+    private func tapAction(_ item: FeedItem) {
+        PreferenceEngine.shared.recordTap(on: item)
+        ReadingStreakManager.shared.recordRead()
+        ReadStateManager.shared.markRead(item)
+        selectedItem = item
+    }
+
     private func mixedLayoutSection(items: [FeedItem]) -> some View {
         let blocks = buildLayoutBlocks(items)
 
@@ -314,25 +391,22 @@ struct FeedTab: View {
                 case .pair(let a, let b):
                     HStack(alignment: .top, spacing: 12) {
                         MediumCardView(item: a)
-                            .onTapGesture {
-                                PreferenceEngine.shared.recordTap(on: a)
-                                ReadStateManager.shared.markRead(a)
-                                selectedItem = a
-                            }
+                            .onTapGesture { tapAction(a) }
                         MediumCardView(item: b)
-                            .onTapGesture {
-                                PreferenceEngine.shared.recordTap(on: b)
-                                ReadStateManager.shared.markRead(b)
-                                selectedItem = b
-                            }
+                            .onTapGesture { tapAction(b) }
+                    }
+                case .triple(let a, let b, let c):
+                    HStack(alignment: .top, spacing: 12) {
+                        MediumCardView(item: a)
+                            .onTapGesture { tapAction(a) }
+                        MediumCardView(item: b)
+                            .onTapGesture { tapAction(b) }
+                        MediumCardView(item: c)
+                            .onTapGesture { tapAction(c) }
                     }
                 case .wide(let item):
                     WideRowView(item: item)
-                        .onTapGesture {
-                            PreferenceEngine.shared.recordTap(on: item)
-                            ReadStateManager.shared.markRead(item)
-                            selectedItem = item
-                        }
+                        .onTapGesture { tapAction(item) }
                 }
             }
         }
@@ -494,6 +568,164 @@ struct SavedArticleRow: View {
     }
 }
 
+// MARK: - Videos Tab
+
+struct VideosTab: View {
+    @ObservedObject var parser: FeedParser
+    @State private var selectedItem: FeedItem?
+
+    private var videoItems: [FeedItem] {
+        parser.items.filter { $0.isVideo }
+    }
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                if videoItems.isEmpty {
+                    VStack(spacing: 16) {
+                        Image(systemName: "play.rectangle")
+                            .font(.system(size: 48))
+                            .foregroundColor(.secondary.opacity(0.4))
+                        Text("No videos yet")
+                            .font(.headline)
+                            .foregroundColor(.secondary)
+                        Text("Videos from MKBHD, Linus Tech Tips, Fireship and more will appear here.")
+                            .font(.subheadline)
+                            .foregroundColor(.secondary.opacity(0.7))
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal, 40)
+                    }
+                } else {
+                    ScrollView {
+                        LazyVStack(spacing: 16) {
+                            ForEach(videoItems) { item in
+                                VideoCardView(item: item)
+                                    .onTapGesture {
+                                        PreferenceEngine.shared.recordTap(on: item)
+                                        ReadingStreakManager.shared.recordRead()
+                                        ReadStateManager.shared.markRead(item)
+                                        selectedItem = item
+                                    }
+                            }
+                        }
+                        .padding()
+                    }
+                }
+            }
+            .background(Color(.systemGroupedBackground))
+            .navigationTitle("Videos")
+            .fullScreenCover(item: $selectedItem) { item in
+                ArticleReaderView(item: item)
+            }
+        }
+    }
+}
+
+struct VideoCardView: View {
+    let item: FeedItem
+    @ObservedObject private var bookmarks = BookmarkManager.shared
+
+    private var isRead: Bool { ReadStateManager.shared.isRead(item) }
+    private var isBookmarked: Bool { bookmarks.isBookmarked(item) }
+
+    /// Extract YouTube video ID from a youtube.com/watch URL.
+    private var youtubeThumbURL: URL? {
+        // YouTube watch URLs: youtube.com/watch?v=VIDEO_ID
+        if let components = URLComponents(url: item.url, resolvingAgainstBaseURL: false),
+           let videoID = components.queryItems?.first(where: { $0.name == "v" })?.value {
+            return URL(string: "https://img.youtube.com/vi/\(videoID)/maxresdefault.jpg")
+        }
+        return item.imageURL
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            // Video thumbnail with play button overlay
+            ZStack {
+                Color(.tertiarySystemGroupedBackground)
+                    .frame(height: 200)
+                    .overlay(
+                        AsyncImage(url: youtubeThumbURL ?? item.imageURL) { phase in
+                            switch phase {
+                            case .success(let image):
+                                image.resizable().scaledToFill()
+                            case .empty:
+                                ProgressView().tint(.arcaOrange)
+                            default:
+                                EmptyView()
+                            }
+                        }
+                    )
+                    .clipped()
+
+                // Play button overlay
+                Circle()
+                    .fill(.black.opacity(0.5))
+                    .frame(width: 56, height: 56)
+                    .overlay(
+                        Image(systemName: "play.fill")
+                            .font(.title3)
+                            .foregroundColor(.white)
+                            .offset(x: 2)
+                    )
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 6) {
+                    Image(systemName: "play.rectangle.fill")
+                        .font(.caption2)
+                        .foregroundColor(.arcaOrange)
+
+                    Text(item.source)
+                        .font(.caption.weight(.bold))
+                        .foregroundColor(.arcaOrange)
+
+                    Text("·")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+
+                    Text(item.pubDate, style: .relative)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+
+                    Spacer()
+
+                    Button {
+                        let impact = UIImpactFeedbackGenerator(style: .medium)
+                        impact.impactOccurred()
+                        bookmarks.toggle(item)
+                    } label: {
+                        Image(systemName: isBookmarked ? "bookmark.fill" : "bookmark")
+                            .foregroundColor(isBookmarked ? .arcaOrange : .secondary.opacity(0.4))
+                    }
+                    .buttonStyle(.plain)
+
+                    ShareLink(item: item.url) {
+                        Image(systemName: "square.and.arrow.up")
+                            .foregroundColor(.secondary.opacity(0.4))
+                    }
+                }
+
+                Text(item.title)
+                    .font(.subheadline.weight(.bold))
+                    .foregroundColor(isRead ? .secondary : .primary)
+                    .lineLimit(2)
+
+                if !item.itemDescription.isEmpty {
+                    Text(item.itemDescription)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .lineLimit(2)
+                }
+            }
+            .padding(12)
+        }
+        .background(Color(.secondarySystemGroupedBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 16))
+        .opacity(isRead ? 0.75 : 1.0)
+    }
+}
+
 // MARK: - Brand Colors
 
 extension Color {
@@ -520,6 +752,7 @@ extension ShapeStyle where Self == LinearGradient {
 
 struct ArcaLoadingView: View {
     @State private var phase: CGFloat = 0
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         VStack(spacing: 20) {
@@ -586,8 +819,12 @@ struct ArcaLoadingView: View {
                 .foregroundColor(.secondary)
         }
         .onAppear {
-            withAnimation(.easeInOut(duration: 1.6).repeatForever(autoreverses: false)) {
-                phase = 1.0
+            if reduceMotion {
+                phase = 0.5 // Static midpoint
+            } else {
+                withAnimation(.easeInOut(duration: 1.6).repeatForever(autoreverses: false)) {
+                    phase = 1.0
+                }
             }
         }
     }
@@ -791,14 +1028,31 @@ struct BriefingCardView: View {
             }
 
             // Footer
-            if trendingCount > 0 {
-                HStack(spacing: 4) {
-                    Image(systemName: "flame.fill")
-                        .font(.caption2)
-                        .foregroundColor(.arcaRed)
-                    Text("\(trendingCount) trending \(trendingCount == 1 ? "story" : "stories") right now")
-                        .font(.caption2.weight(.medium))
-                        .foregroundColor(.secondary)
+            HStack {
+                if trendingCount > 0 {
+                    HStack(spacing: 4) {
+                        Image(systemName: "flame.fill")
+                            .font(.caption2)
+                            .foregroundColor(.arcaRed)
+                        Text("\(trendingCount) trending \(trendingCount == 1 ? "story" : "stories") right now")
+                            .font(.caption2.weight(.medium))
+                            .foregroundColor(.secondary)
+                    }
+                }
+
+                Spacer()
+
+                // Reading streak
+                let streak = ReadingStreakManager.shared
+                if streak.currentStreak > 0 {
+                    HStack(spacing: 3) {
+                        Image(systemName: streak.streakTier.icon)
+                            .font(.caption2)
+                            .foregroundColor(streak.currentStreak >= 7 ? .arcaRed : .arcaOrange)
+                        Text("\(streak.currentStreak) day streak")
+                            .font(.caption2.weight(.bold))
+                            .foregroundColor(streak.currentStreak >= 7 ? .arcaRed : .arcaOrange)
+                    }
                 }
             }
         }

@@ -2,6 +2,7 @@ import SwiftUI
 
 struct SettingsView: View {
     @ObservedObject private var sourceManager = SourceManager.shared
+    @ObservedObject private var signInManager = GoogleSignInManager.shared
     @Environment(\.dismiss) private var dismiss
     @State private var showAddFeed = false
     @State private var newFeedName = ""
@@ -92,6 +93,64 @@ struct SettingsView: View {
                                 .font(.subheadline.weight(.medium))
                                 .foregroundColor(.arcaOrange)
                         }
+                    }
+                }
+
+                // Account
+                Section(header: Text("Account")) {
+                    if signInManager.isSignedIn {
+                        HStack(spacing: 12) {
+                            Image(systemName: "person.crop.circle.fill")
+                                .font(.title2)
+                                .foregroundColor(.arcaOrange)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(signInManager.userName)
+                                    .font(.subheadline.weight(.medium))
+                                Text(signInManager.userEmail)
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+                        Button {
+                            signInManager.syncBookmarksToCloud()
+                            signInManager.syncStreakToCloud()
+                        } label: {
+                            HStack {
+                                Image(systemName: "arrow.triangle.2.circlepath")
+                                    .foregroundColor(.arcaOrange)
+                                Text("Sync to iCloud")
+                                    .font(.subheadline)
+                            }
+                        }
+                        Button(role: .destructive) {
+                            signInManager.signOut()
+                        } label: {
+                            HStack {
+                                Image(systemName: "rectangle.portrait.and.arrow.right")
+                                Text("Sign Out")
+                                    .font(.subheadline)
+                            }
+                        }
+                    } else {
+                        Button {
+                            #if os(iOS)
+                            if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+                               let window = windowScene.windows.first {
+                                signInManager.signIn(presenting: window)
+                            }
+                            #endif
+                        } label: {
+                            HStack {
+                                Image(systemName: "person.crop.circle.badge.plus")
+                                    .foregroundColor(.arcaOrange)
+                                Text("Sign in with Google")
+                                    .font(.subheadline.weight(.medium))
+                                    .foregroundColor(.arcaOrange)
+                            }
+                        }
+                        Text("Sync bookmarks and reading streak across devices")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
                     }
                 }
 

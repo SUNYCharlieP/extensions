@@ -23,6 +23,9 @@
 		A1B2C3D40000000E /* WeeklyDigestView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D40000001F /* WeeklyDigestView.swift */; };
 		A1B2C3D40000000F /* NotificationManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D400000022 /* NotificationManager.swift */; };
 		A1B2C3D4000000A0 /* OfflineCacheManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D400000023 /* OfflineCacheManager.swift */; };
+		A1B2C3D4000000A1 /* LaunchScreenView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D400000024 /* LaunchScreenView.swift */; };
+		A1B2C3D4000000A2 /* ReadingStreakManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D400000025 /* ReadingStreakManager.swift */; };
+		A1B2C3D4000000A3 /* GoogleSignInManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D400000026 /* GoogleSignInManager.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -44,6 +47,9 @@
 		A1B2C3D40000001F /* WeeklyDigestView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WeeklyDigestView.swift; sourceTree = "<group>"; };
 		A1B2C3D400000022 /* NotificationManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationManager.swift; sourceTree = "<group>"; };
 		A1B2C3D400000023 /* OfflineCacheManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OfflineCacheManager.swift; sourceTree = "<group>"; };
+		A1B2C3D400000024 /* LaunchScreenView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LaunchScreenView.swift; sourceTree = "<group>"; };
+		A1B2C3D400000025 /* ReadingStreakManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReadingStreakManager.swift; sourceTree = "<group>"; };
+		A1B2C3D400000026 /* GoogleSignInManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GoogleSignInManager.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -83,6 +89,9 @@
 				A1B2C3D40000001F /* WeeklyDigestView.swift */,
 				A1B2C3D400000022 /* NotificationManager.swift */,
 				A1B2C3D400000023 /* OfflineCacheManager.swift */,
+				A1B2C3D400000024 /* LaunchScreenView.swift */,
+				A1B2C3D400000025 /* ReadingStreakManager.swift */,
+				A1B2C3D400000026 /* GoogleSignInManager.swift */,
 				A1B2C3D400000015 /* Assets.xcassets */,
 				A1B2C3D400000016 /* Info.plist */,
 			);
@@ -181,6 +190,9 @@
 				A1B2C3D40000000E /* WeeklyDigestView.swift in Sources */,
 				A1B2C3D40000000F /* NotificationManager.swift in Sources */,
 				A1B2C3D4000000A0 /* OfflineCacheManager.swift in Sources */,
+				A1B2C3D4000000A1 /* LaunchScreenView.swift in Sources */,
+				A1B2C3D4000000A2 /* ReadingStreakManager.swift in Sources */,
+				A1B2C3D4000000A3 /* GoogleSignInManager.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
