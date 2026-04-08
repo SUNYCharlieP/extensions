@@ -839,27 +839,11 @@ private struct ShortEmbedWebView: UIViewRepresentable {
         })
         guard !safeID.isEmpty else { return }
 
-        let html = """
-        <!DOCTYPE html>
-        <html>
-        <head>
-        <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-        <style>
-            * { margin: 0; padding: 0; }
-            html, body { width: 100%; height: 100%; background: #000; overflow: hidden; }
-            iframe { position: absolute; top: 0; left: 0; width: 100%; height: 100%; border: none; }
-        </style>
-        </head>
-        <body>
-        <iframe
-            src="https://www.youtube.com/embed/\(safeID)?autoplay=1&playsinline=1&mute=1&controls=1&rel=0&modestbranding=1&loop=1&playlist=\(safeID)"
-            allow="autoplay; encrypted-media; picture-in-picture"
-            allowfullscreen>
-        </iframe>
-        </body>
-        </html>
-        """
-        webView.loadHTMLString(html, baseURL: URL(string: "https://www.youtube.com"))
+        // Load the YouTube embed URL directly — loadHTMLString with an iframe
+        // triggers error 152 because YouTube's embed player rejects the
+        // synthetic origin from a local HTML page.
+        let embedURL = URL(string: "https://www.youtube.com/embed/\(safeID)?autoplay=1&playsinline=1&mute=1&controls=1&rel=0&modestbranding=1&loop=1&playlist=\(safeID)")!
+        webView.load(URLRequest(url: embedURL))
     }
 
     class Coordinator {
