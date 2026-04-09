@@ -143,6 +143,8 @@ class FeedParser: ObservableObject {
                     guard let self = self,
                           let idx = self.items.firstIndex(where: { $0.id == itemID }) else { return }
                     self.items[idx].imageURL = imageURL
+                    let str = imageURL.absoluteString.lowercased()
+                    self.items[idx].hasQualityImage = (str.hasPrefix("http") || str.hasPrefix("//")) && !FeedItem.junkPatterns.contains(where: { str.contains($0) })
                 }
             }.resume()
         }

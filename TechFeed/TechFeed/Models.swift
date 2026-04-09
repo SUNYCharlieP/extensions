@@ -58,7 +58,7 @@ struct FeedItem: Identifiable, Equatable {
         }
     }
 
-    private static let junkPatterns = [
+    static let junkPatterns = [
         "logo", "icon", "avatar", "favicon", "pixel", "1x1",
         "tracking", "spacer", "blank", ".svg", ".gif", "data:",
         "gravatar", "sprite", "badge", "emoji", "button",
