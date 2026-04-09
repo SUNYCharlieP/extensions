@@ -25,7 +25,15 @@ class OfflineCacheManager {
         guard !fileManager.fileExists(atPath: fileURL.path) else { return }
 
         var request = URLRequest(url: item.url)
-        request.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)", forHTTPHeaderField: "User-Agent")
+        // Use Googlebot UA for paywalled sites so we cache the full article, not the paywall
+        let paywalled = ["theverge.com", "fortune.com", "arstechnica.com"]
+        let host = item.url.host?.lowercased() ?? ""
+        let isPaywalled = paywalled.contains(where: { host == $0 || host.hasSuffix(".\($0)") })
+        if isPaywalled {
+            request.setValue("Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)", forHTTPHeaderField: "User-Agent")
+        } else {
+            request.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)", forHTTPHeaderField: "User-Agent")
+        }
 
         URLSession.shared.dataTask(with: request) { [weak self] data, _, error in
             guard let self = self, let data = data, error == nil else { return }

@@ -1,15 +1,17 @@
 import SwiftUI
+import AuthenticationServices
 
 struct SettingsView: View {
     @ObservedObject private var sourceManager = SourceManager.shared
-    @ObservedObject private var signInManager = GoogleSignInManager.shared
+    @ObservedObject private var signInManager = AppleSignInManager.shared
     @Environment(\.dismiss) private var dismiss
+    @State private var showCategoryPicker = false
     @State private var showAddFeed = false
     @State private var newFeedName = ""
     @State private var newFeedURL = ""
     @State private var newFeedCategory = "General Tech"
 
-    private let categoryOptions = ["Apple", "General Tech", "Hacker News", "Security", "Science"]
+    private let categoryOptions = ["Apple", "General Tech", "Hacker News", "Security", "Science", "Reviews"]
 
     private var groupedFeeds: [(String, [RSSFeed])] {
         let all = RSSFeed.allFeeds
@@ -17,7 +19,7 @@ struct SettingsView: View {
         for feed in all {
             groups[feed.category, default: []].append(feed)
         }
-        let order = ["Apple", "General Tech", "Hacker News", "Security", "Science", "Videos", "Shorts"]
+        let order = ["Apple", "General Tech", "Reviews", "Hacker News", "Security", "Science"]
         return order.compactMap { cat in
             guard let feeds = groups[cat] else { return nil }
             return (cat, feeds)
@@ -88,7 +90,8 @@ struct SettingsView: View {
                 // Add custom feed
                 Section {
                     Button {
-                        showAddFeed = true
+                        newFeedCategory = "General Tech"
+                        showCategoryPicker = true
                     } label: {
                         HStack {
                             Image(systemName: "plus.circle.fill")
@@ -136,22 +139,13 @@ struct SettingsView: View {
                             }
                         }
                     } else {
-                        Button {
-                            #if os(iOS)
-                            if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
-                               let window = windowScene.windows.first(where: \.isKeyWindow) ?? windowScene.windows.first {
-                                signInManager.signIn(presenting: window)
-                            }
-                            #endif
-                        } label: {
-                            HStack {
-                                Image(systemName: "person.crop.circle.badge.plus")
-                                    .foregroundColor(.arcaOrange)
-                                Text("Sign in with Google")
-                                    .font(.subheadline.weight(.medium))
-                                    .foregroundColor(.arcaOrange)
-                            }
+                        SignInWithAppleButton(.signIn) { request in
+                            request.requestedScopes = [.fullName, .email]
+                        } onCompletion: { result in
+                            signInManager.handleSignInResult(result)
                         }
+                        .signInWithAppleButtonStyle(.whiteOutline)
+                        .frame(height: 44)
                         Text("Sync bookmarks and reading streak across devices")
                             .font(.caption)
                             .foregroundColor(.secondary)
@@ -182,6 +176,17 @@ struct SettingsView: View {
                         .foregroundColor(.arcaOrange)
                 }
             }
+            .confirmationDialog("Choose Category", isPresented: $showCategoryPicker) {
+                ForEach(categoryOptions, id: \.self) { cat in
+                    Button(cat) {
+                        newFeedCategory = cat
+                        showAddFeed = true
+                    }
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("Pick a category for the new feed")
+            }
             .alert("Add RSS Feed", isPresented: $showAddFeed) {
                 TextField("Feed Name", text: $newFeedName)
                 TextField("Feed URL", text: $newFeedURL)
@@ -197,7 +202,7 @@ struct SettingsView: View {
                 }
                 Button("Cancel", role: .cancel) {}
             } message: {
-                Text("Enter a name and RSS feed URL")
+                Text("Adding to \(newFeedCategory) — enter a name and RSS URL")
             }
         }
     }

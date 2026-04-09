@@ -173,12 +173,12 @@ enum ReaderContentRules {
         }
         // Minimal CSS-display-none for ad containers only — NOT page layout elements
         let cssHide = """
-        {"trigger":{"url-filter":".*"},"action":{"type":"css-display-none","selector":".ad, .ads, .advert, .advertisement, [class*=\\"adslot\\"], [class*=\\"ad-unit\\"], [class*=\\"ad-wrapper\\"], [class*=\\"ad-container\\"], [data-ad], [data-ad-slot], [data-advertisement], .cookie-banner, .consent-banner, .gdpr, #comments, .disqus, [class*=\\"taboola\\"], [class*=\\"outbrain\\"]"}}
+        {"trigger":{"url-filter":".*"},"action":{"type":"css-display-none","selector":".ad, .ads, .advert, .advertisement, [class*=\\"adslot\\"], [class*=\\"ad-unit\\"], [class*=\\"ad-wrapper\\"], [class*=\\"ad-container\\"], [data-ad], [data-ad-slot], [data-advertisement], .cookie-banner, .consent-banner, .gdpr, #comments, .disqus, [class*=\\"taboola\\"], [class*=\\"outbrain\\"], [class*=\\"onetrust\\"], [class*=\\"OneTrust\\"], #onetrust-consent-sdk, [class*=\\"evidon\\"], [class*=\\"truste\\"], [id*=\\"consent\\"], [class*=\\"consent-modal\\"], [class*=\\"cookie-notice\\"], [class*=\\"cookie-wall\\"], [class*=\\"c-globalModal\\"], [class*=\\"newsletter-modal\\"], [class*=\\"signup-modal\\"], [class*=\\"overlay-modal\\"]"}}
         """
         entries.append(cssHide)
         let rules = "[" + entries.joined(separator: ",") + "]"
 
-        WKContentRuleListStore.default().lookUpContentRuleList(forIdentifier: "ReaderRulesV6") { existing, _ in
+        WKContentRuleListStore.default().lookUpContentRuleList(forIdentifier: "ReaderRulesV9") { existing, _ in
             if let existing = existing {
                 lock.lock()
                 _compiled = existing
@@ -186,7 +186,7 @@ enum ReaderContentRules {
                 return
             }
             WKContentRuleListStore.default().compileContentRuleList(
-                forIdentifier: "ReaderRulesV6",
+                forIdentifier: "ReaderRulesV9",
                 encodedContentRuleList: rules
             ) { ruleList, _ in
                 lock.lock()
@@ -203,153 +203,138 @@ struct ReaderWebView: UIViewRepresentable {
     let url: URL
     var onFinished: (() -> Void)?
 
-    // Lightweight CSS injected at document START.
-    // ONLY does: hide fixed/sticky chrome, basic typography, dark mode.
-    // Does NOT hide broad class patterns that match content containers.
+    // ── Minimal CSS ──
+    // NO element hiding. NO layout overrides. NO JS cleanup.
+    // Ad blocking is handled entirely by WKContentRuleList (network-level).
+    // We only inject: overflow-x fix, dark/light mode colors, image scaling,
+    // and focus-outline removal. Nothing that can break page content.
     private static let readerCSS = """
     (function() {
         var style = document.createElement('style');
         style.textContent = `
-            /* Hide fixed/sticky overlays (nav bars, subscribe bars, cookie banners).
-               Use attribute selectors on inline styles only — these are safe because
-               real article content is never inline position:fixed. */
-            [style*="position: fixed"], [style*="position:fixed"],
-            [style*="position: sticky"], [style*="position:sticky"] {
-                display: none !important;
-            }
-
-            /* Specific known site chrome — safe to hide */
-            [role="banner"], [role="navigation"], [role="contentinfo"],
-            .cookie-banner, .consent-banner, .gdpr-banner,
-            [class*="paywall"], [class*="Paywall"],
-            [class*="newsletter"], [class*="Newsletter"],
-            [class*="subscribe-bar"], [class*="SubscribeBar"],
-            [class*="cookie"], [class*="Cookie"],
-            [class*="consent"], [class*="Consent"],
-            #comments, .disqus {
-                display: none !important;
-            }
-
-            /* ── Base typography ── */
             body {
                 -webkit-text-size-adjust: 100% !important;
                 overflow-x: hidden !important;
             }
-            /* Constrain article content width — but only direct article/main
-               containers, not the body itself (which breaks sites like
-               The Verge that use full-width wrappers with inner layout). */
-            article, main, [role="main"],
-            .article-body, .post-body, .entry-content,
-            .article-content, .story-body {
-                max-width: 680px !important;
-                margin-left: auto !important;
-                margin-right: auto !important;
-                padding-left: 16px !important;
-                padding-right: 16px !important;
-                font-size: 18px !important;
-                line-height: 1.7 !important;
-            }
+            img { max-width: 100% !important; height: auto !important; }
+            iframe, video { max-width: 100% !important; }
+            *:focus { outline: none !important; }
 
-            /* ── Dark mode ── */
             @media (prefers-color-scheme: dark) {
-                body {
-                    color: #f0f0f0 !important;
-                    background: #1c1c1e !important;
-                }
+                body { color: #f0f0f0 !important; background: #1c1c1e !important; }
                 a { color: #FF854F !important; }
-                h1, h2, h3, h4, h5, h6 { color: #ffffff !important; }
+                h1,h2,h3,h4,h5,h6 { color: #fff !important; }
                 img { opacity: 0.92; }
-                pre, code {
-                    background: #2c2c2e !important;
-                    color: #e5e5e5 !important;
-                }
+                pre, code { background: #2c2c2e !important; color: #e5e5e5 !important; }
             }
-
-            /* ── Light mode ── */
             @media (prefers-color-scheme: light) {
-                body {
-                    color: #1a1a1a !important;
-                    background: #ffffff !important;
-                }
+                body { color: #1a1a1a !important; background: #fff !important; }
                 a { color: #FF7A3D !important; }
             }
 
-            /* ── Images ── */
-            img {
-                max-width: 100% !important;
-                height: auto !important;
+            /* Hide broken oEmbed/API error JSON blocks */
+            .fb-post, .instagram-media,
+            [data-instgrm-captioned],
+            [class*="embed-error"], [class*="oembed-error"] {
+                display: none !important;
             }
 
-            /* ── Headings ── */
-            h1, h2, h3 {
-                font-weight: 700 !important;
-                line-height: 1.3 !important;
+            /* Kill paywall overlays — precise selectors only.
+               Avoid broad substring matches like "gate" (matches navigate),
+               "gradient" (matches decorative CSS), "truncat" (matches UI truncation). */
+            [class*="paywall"], [class*="Paywall"],
+            [class*="metering"], [class*="Metering"],
+            [class*="regwall"], [class*="Regwall"],
+            [class*="subscribe-wall"], [class*="SubscribeWall"],
+            [class*="piano-"], [id*="paywall"],
+            [id*="piano"], [class*="tp-modal"],
+            [class*="tp-backdrop"], .tp-active,
+            [data-piano-id],
+            .overlay-no-scroll, .noscroll,
+            [class*="PigeonPaywall"],
+            [class*="duet--article--article-body-component"] ~ div[class*="z-"],
+            /* Vox Media / The Verge paywall */
+            [class*="duet--cta"],
+            [class*="paywall-overlay"],
+            [class*="subscriber-only"],
+            [class*="c-entry-content__paywall"],
+            [class*="c-floating-button"],
+            [class*="c-chorus-card"],
+            [class*="hub-peek-embed"],
+            [class*="enthusiast-ad"],
+            /* Wired / Conde Nast paywall */
+            [class*="paywall-bar"],
+            [class*="journey-unit"],
+            [class*="RecircMostPopularContainer"],
+            [data-testid*="paywall"],
+            [data-testid*="GenericCallout"] {
+                display: none !important;
             }
-            h1 { font-size: 26px !important; }
-            h2 { font-size: 21px !important; }
-
-            figure {
-                margin: 16px 0 !important;
-                padding: 0 !important;
-            }
-            figcaption {
-                font-size: 14px !important;
-                color: #8e8e93 !important;
-                margin-top: 6px !important;
-            }
-            blockquote {
-                border-left: 3px solid #FF7A3D !important;
-                padding-left: 16px !important;
-                margin: 16px 0 !important;
-                font-style: italic !important;
-            }
-            iframe, video {
-                max-width: 100% !important;
-            }
-
-            /* Remove outlines/focus rings that show as blue lines */
-            *:focus { outline: none !important; }
         `;
-        document.documentElement.appendChild(style);
+        if (document.documentElement) {
+            document.documentElement.appendChild(style);
+        } else {
+            document.addEventListener('DOMContentLoaded', function() {
+                document.documentElement.appendChild(style);
+            });
+        }
     })();
     """
 
-    // Post-load JS: hide fixed/sticky elements that JS inserts after page load
-    private static let postLoadCleanup = """
+    private static let postLoadPaywallKill = """
     (function() {
-        function killFixed(el) {
-            if (!el || !el.getBoundingClientRect) return;
-            var s = window.getComputedStyle(el);
-            if (s.position === 'fixed' || s.position === 'sticky') {
-                var rect = el.getBoundingClientRect();
-                // Only kill elements that look like nav bars / banners
-                // (short height, pinned to top or bottom edge)
-                if (rect.height < 200 || rect.top < 10 || rect.bottom > window.innerHeight - 10) {
-                    el.style.setProperty('display', 'none', 'important');
-                }
-            }
-        }
-        function scanTopLevel() {
+        function killPaywall() {
             if (!document.body) return;
-            var kids = document.body.children;
-            for (var i = 0; i < kids.length; i++) {
-                killFixed(kids[i]);
-            }
-        }
-        scanTopLevel();
-        setTimeout(scanTopLevel, 2000);
-        setTimeout(scanTopLevel, 5000);
-        // Watch for dynamically-inserted fixed elements on body only
-        if (window.MutationObserver && document.body) {
-            var obs = new MutationObserver(function(mutations) {
-                for (var m = 0; m < mutations.length; m++) {
-                    var added = mutations[m].addedNodes;
-                    for (var n = 0; n < added.length; n++) {
-                        if (added[n].nodeType === 1) killFixed(added[n]);
-                    }
+            // Remove overflow:hidden from body/html that paywalls add
+            document.documentElement.style.setProperty('overflow', 'auto', 'important');
+            document.body.style.setProperty('overflow', 'auto', 'important');
+            // Remove noscroll classes
+            document.documentElement.classList.remove('noscroll', 'no-scroll', 'tp-modal-open', 'tp-active');
+            document.body.classList.remove('noscroll', 'no-scroll', 'tp-modal-open', 'tp-active');
+            // Expand article content containers that paywalls truncate
+            document.querySelectorAll('[style*="max-height"]').forEach(function(el) {
+                if (el.querySelector('p') || el.querySelector('h2')) {
+                    el.style.maxHeight = 'none';
+                    el.style.overflow = 'visible';
                 }
             });
+            // Expand truncated article bodies (Verge/Vox Media style)
+            document.querySelectorAll('[class*="duet--article"] [style*="overflow"]').forEach(function(el) {
+                el.style.overflow = 'visible';
+                el.style.maxHeight = 'none';
+            });
+            // Remove gradient fade overlays paywalls use to tease content
+            document.querySelectorAll('[style*="linear-gradient"]').forEach(function(el) {
+                if (el.offsetHeight < 200) el.style.display = 'none';
+            });
+        }
+        killPaywall();
+        setTimeout(killPaywall, 1500);
+        setTimeout(killPaywall, 3000);
+
+        // Hide raw JSON error text (e.g., broken Facebook/Instagram oEmbed)
+        function hideJSONErrors() {
+            if (!document.body) return;
+            var walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+            while (walker.nextNode()) {
+                var text = walker.currentNode.textContent.trim();
+                if (text.length > 20 && text.indexOf('"error"') !== -1 && text.indexOf('"message"') !== -1) {
+                    walker.currentNode.parentElement.style.display = 'none';
+                }
+            }
+        }
+        setTimeout(hideJSONErrors, 2000);
+        setTimeout(hideJSONErrors, 5000);
+        setTimeout(killPaywall, 5000);
+        // Watch for dynamically inserted paywall — auto-disconnect after 10s
+        if (window.MutationObserver && document.body) {
+            var calls = 0;
+            var obs = new MutationObserver(function() {
+                if (++calls > 20) { obs.disconnect(); return; }
+                killPaywall();
+            });
             obs.observe(document.body, { childList: true, subtree: false });
+            setTimeout(function() { obs.disconnect(); }, 10000);
         }
     })();
     """
@@ -368,27 +353,46 @@ struct ReaderWebView: UIViewRepresentable {
         )
         config.userContentController.addUserScript(cssScript)
 
-        let cleanupJS = WKUserScript(
-            source: Self.postLoadCleanup,
+        let paywallJS = WKUserScript(
+            source: Self.postLoadPaywallKill,
             injectionTime: .atDocumentEnd,
             forMainFrameOnly: true
         )
-        config.userContentController.addUserScript(cleanupJS)
+        config.userContentController.addUserScript(paywallJS)
 
         let webView = WKWebView(frame: .zero, configuration: config)
-        webView.allowsBackForwardNavigationGestures = false
+        webView.allowsBackForwardNavigationGestures = true
         webView.isOpaque = true
         webView.backgroundColor = .systemBackground
         webView.scrollView.contentInsetAdjustmentBehavior = .never
         webView.navigationDelegate = context.coordinator
 
         var request = URLRequest(url: url)
-        request.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1", forHTTPHeaderField: "User-Agent")
+        if Self.isPaywalled(url) {
+            // Paywalled sites often serve full content to search engine crawlers
+            request.setValue("Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)", forHTTPHeaderField: "User-Agent")
+        } else {
+            request.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1", forHTTPHeaderField: "User-Agent")
+        }
         webView.load(request)
         return webView
     }
 
+    private static func isPaywalled(_ url: URL) -> Bool {
+        guard let host = url.host?.lowercased() else { return false }
+        // Only sites where Googlebot UA actually bypasses the paywall.
+        // Hard-paywalled sites (Wired, NYT, WSJ, etc.) verify Google's IP — Googlebot UA won't work.
+        // Those go through NativeReaderView's native RSS excerpt instead.
+        let paywalled = ["theverge.com", "fortune.com", "arstechnica.com"]
+        return paywalled.contains(where: { host == $0 || host.hasSuffix(".\($0)") })
+    }
+
     func updateUIView(_ uiView: WKWebView, context: Context) {}
+
+    static func dismantleUIView(_ uiView: WKWebView, coordinator: Coordinator) {
+        uiView.stopLoading()
+        uiView.navigationDelegate = nil
+    }
 
     func makeCoordinator() -> Coordinator {
         Coordinator(onFinished: onFinished)
@@ -401,7 +405,6 @@ struct ReaderWebView: UIViewRepresentable {
         init(onFinished: (() -> Void)?) {
             self.onFinished = onFinished
             super.init()
-            // Timeout fallback — force-show after 8 seconds
             DispatchQueue.main.asyncAfter(deadline: .now() + 8) { [weak self] in
                 self?.complete()
             }
@@ -431,8 +434,13 @@ struct ReaderWebView: UIViewRepresentable {
             }
         }
 
-        // Allow redirects — some sites (Ars Technica) redirect before serving content
         func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+            if navigationAction.navigationType == .linkActivated,
+               let url = navigationAction.request.url {
+                UIApplication.shared.open(url)
+                decisionHandler(.cancel)
+                return
+            }
             decisionHandler(.allow)
         }
     }

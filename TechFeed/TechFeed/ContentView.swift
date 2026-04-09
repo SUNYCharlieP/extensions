@@ -1,5 +1,4 @@
 import SwiftUI
-import WebKit
 
 // MARK: - Root Tab View
 
@@ -10,6 +9,7 @@ struct ContentView: View {
     @State private var selectedTab = 0
     @State private var showOnboarding = false
     @State private var showLaunch = true
+    @State private var showFullPlayer = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
@@ -23,29 +23,44 @@ struct ContentView: View {
                         parser.fetchAllFeeds()
                     }
                 } else {
-                    TabView(selection: $selectedTab) {
-                        FeedTab(parser: parser)
-                            .tabItem {
-                                Image(systemName: "newspaper.fill")
-                                Text("Feed")
-                            }
-                            .tag(0)
+                    ZStack(alignment: .bottom) {
+                        TabView(selection: $selectedTab) {
+                            FeedTab(parser: parser)
+                                .tabItem {
+                                    Image(systemName: "newspaper.fill")
+                                    Text("Feed")
+                                }
+                                .tag(0)
 
-                        ShortsTab(parser: parser)
-                            .tabItem {
-                                Image(systemName: "bolt.circle.fill")
-                                Text("Shorts")
-                            }
-                            .tag(1)
+                            ListenTab()
+                                .tabItem {
+                                    Image(systemName: "headphones")
+                                    Text("Listen")
+                                }
+                                .tag(1)
 
-                        BookmarksTab(parser: parser)
-                            .tabItem {
-                                Image(systemName: "bookmark.fill")
-                                Text("Saved")
-                            }
-                            .tag(2)
+                            BookmarksTab(parser: parser)
+                                .tabItem {
+                                    Image(systemName: "bookmark.fill")
+                                    Text("Saved")
+                                }
+                                .tag(2)
+                        }
+                        .tint(.arcaOrange)
+
+                        // Mini player floats above tab bar
+                        MiniPlayerBar {
+                            showFullPlayer = true
+                        }
+                        .padding(.bottom, 50) // above tab bar
                     }
-                    .tint(.arcaOrange)
+                    .sheet(isPresented: $showFullPlayer) {
+                        if let episode = AudioPlayerManager.shared.currentEpisode {
+                            FullPlayerView(episode: episode)
+                        } else {
+                            Color.clear.onAppear { showFullPlayer = false }
+                        }
+                    }
                     .onAppear {
                         parser.fetchAllFeeds()
                         NotificationManager.shared.requestPermission()
@@ -64,7 +79,7 @@ struct ContentView: View {
                 showOnboarding = true
             }
             // Dismiss launch screen
-            let delay: Double = reduceMotion ? 0.5 : 1.5
+            let delay: Double = reduceMotion ? 0.2 : 0.6
             DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
                 withAnimation(.easeOut(duration: 0.4)) {
                     showLaunch = false
@@ -78,9 +93,10 @@ struct ContentView: View {
 
 struct FeedTab: View {
     @ObservedObject var parser: FeedParser
-    @State private var selectedItem: FeedItem?
     @State private var selectedCategory = "Top Picks"
     @State private var searchText = ""
+
+    @State private var selectedItem: FeedItem?
 
     /// Single sheet state prevents iOS sheet-presentation conflicts.
     private enum SheetKind: Identifiable {
@@ -100,7 +116,7 @@ struct FeedTab: View {
     @Environment(\.horizontalSizeClass) private var sizeClass
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    private let categories = ["Top Picks", "Apple", "General Tech", "Hacker News", "Security", "Science", "Videos", "Shorts"]
+    private let categories = ["Top Picks", "Apple", "General Tech", "Hacker News", "Security", "Science", "Reviews"]
 
     private var isIPad: Bool { sizeClass == .regular }
 
@@ -121,7 +137,7 @@ struct FeedTab: View {
             }
         }
         .fullScreenCover(item: $selectedItem) { item in
-            ArticleReaderView(item: item)
+            NativeReaderView(item: item)
         }
         .sheet(item: $activeSheet) { sheet in
             switch sheet {
@@ -207,7 +223,7 @@ struct FeedTab: View {
     private var filteredItems: [FeedItem] {
         var items: [FeedItem]
         if selectedCategory == "Top Picks" {
-            items = parser.items
+            items = parser.items.filter { !$0.isShort }
         } else {
             items = parser.items.filter { $0.category == selectedCategory }
         }
@@ -227,18 +243,17 @@ struct FeedTab: View {
     private var feedContent: some View {
         // Compute filtered/quality items ONCE per body evaluation
         let filtered = filteredItems
-        let quality: [FeedItem] = {
-            if selectedCategory == "Videos" || selectedCategory == "Shorts" {
-                return filtered.filter { $0.hasQualityImage || $0.isVideo }
-            }
-            return filtered.filter { $0.hasQualityImage && !$0.isVideo }
-        }()
-        let videos = filtered.filter { $0.isVideo && !$0.isShort }.prefix(6)
-        let briefingItems = Array(quality.prefix(5))
+        let quality = filtered.filter { $0.hasQualityImage }
+        // For tabs with mostly text-only items (e.g., Hacker News), use all items
+        let hasEnoughImages = quality.count >= 3
+        let displayItems = hasEnoughImages ? quality : filtered
+        let briefingItems = diversePick(from: displayItems, count: 5)
         let briefingShown = briefingItems.count >= 3
-        let skipCount = briefingShown ? briefingItems.count : 0
-        let top = Array(quality.dropFirst(skipCount).prefix(3))
-        let remaining = Array(quality.dropFirst(skipCount + top.count).prefix(12))
+        let briefingIDs = Set(briefingItems.map(\.id))
+        let afterBriefing = displayItems.filter { !briefingIDs.contains($0.id) }
+        let top = Array(afterBriefing.prefix(3))
+        let topIDs = Set(top.map(\.id))
+        let remaining = Array(afterBriefing.filter { !topIDs.contains($0.id) }.prefix(12))
 
         return ScrollView {
             LazyVStack(spacing: 0) {
@@ -272,71 +287,80 @@ struct FeedTab: View {
                 categoryBar
                     .padding(.top, 4)
 
-                // ── Smart Briefing ──
-                if briefingShown {
-                    BriefingCardView(items: briefingItems, subtitle: currentMood.briefingSubtitle, onTap: { item in
-                        tapAction(item)
-                    })
-                        .padding(.horizontal)
-                        .padding(.top, 16)
-                }
-
-                // ── Tier 1: Top 3 big stories ──
-                if !top.isEmpty {
-                    feedSection(title: currentMood.sectionTitle) {
-                        VStack(spacing: 16) {
-                            ForEach(top) { item in
-                                VStack(spacing: 0) {
-                                    StoryCardView(item: item, onTap: {
-                                        tapAction(item)
-                                    }, onDeepDive: item.relatedArticles.isEmpty ? nil : {
-                                        activeSheet = .deepDive(item)
-                                    })
-
-                                    if !item.relatedArticles.isEmpty {
-                                        MoreCoverageView(
-                                            articles: item.relatedArticles,
-                                            onTap: { related in
-                                                PreferenceEngine.shared.recordTap(on: related)
-                                                selectedItem = related
-                                            },
-                                            onDeepDive: {
-                                                activeSheet = .deepDive(item)
-                                            }
-                                        )
-                                    }
-                                }
+                if !searchText.isEmpty {
+                    // ── Search Results ──
+                    let searchResults = filtered.prefix(20)
+                    if searchResults.isEmpty {
+                        VStack(spacing: 12) {
+                            Image(systemName: "magnifyingglass")
+                                .font(.title)
+                                .foregroundColor(.secondary)
+                            Text("No results for \"\(searchText)\"")
+                                .font(.subheadline)
+                                .foregroundColor(.secondary)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.top, 40)
+                    } else {
+                        VStack(spacing: 12) {
+                            ForEach(Array(searchResults)) { item in
+                                StoryCardView(item: item, onTap: {
+                                    tapAction(item)
+                                }, onDeepDive: nil)
                             }
                         }
                         .padding(.horizontal)
+                        .padding(.top, 12)
                     }
-                    .padding(.top, 16)
-                }
+                } else {
+                    // ── Smart Briefing ──
+                    if briefingShown {
+                        BriefingCardView(items: briefingItems, subtitle: currentMood.briefingSubtitle, onTap: { item in
+                            tapAction(item)
+                        })
+                            .padding(.horizontal)
+                            .padding(.top, 16)
+                    }
 
-                // ── Video picks ──
-                if !videos.isEmpty {
-                    feedSection(title: "Tech Videos") {
-                        ScrollView(.horizontal, showsIndicators: false) {
-                            HStack(spacing: 14) {
-                                ForEach(Array(videos)) { item in
-                                    CompactVideoCard(item: item)
-                                        .frame(width: 260)
-                                        .onTapGesture { tapAction(item) }
+                    // ── Tier 1: Top 3 big stories ──
+                    if !top.isEmpty {
+                        feedSection(title: currentMood.sectionTitle) {
+                            VStack(spacing: 16) {
+                                ForEach(top) { item in
+                                    VStack(spacing: 0) {
+                                        StoryCardView(item: item, onTap: {
+                                            tapAction(item)
+                                        }, onDeepDive: item.relatedArticles.isEmpty ? nil : {
+                                            activeSheet = .deepDive(item)
+                                        })
+
+                                        if !item.relatedArticles.isEmpty {
+                                            MoreCoverageView(
+                                                articles: item.relatedArticles,
+                                                onTap: { related in
+                                                    tapAction(related)
+                                                },
+                                                onDeepDive: {
+                                                    activeSheet = .deepDive(item)
+                                                }
+                                            )
+                                        }
+                                    }
                                 }
                             }
                             .padding(.horizontal)
                         }
+                        .padding(.top, 16)
                     }
-                    .padding(.top, 20)
-                }
 
-                // ── Tier 2: Mixed layout ──
-                if !remaining.isEmpty {
-                    mixedLayoutSection(items: remaining)
-                        .padding(.top, 24)
+                    // ── Tier 2: Mixed layout ──
+                    if !remaining.isEmpty {
+                        mixedLayoutSection(items: remaining)
+                            .padding(.top, 24)
+                    }
                 }
             }
-            .padding(.bottom, 20)
+            .padding(.bottom, AudioPlayerManager.shared.currentEpisode != nil ? 80 : 20)
         }
         .refreshable {
             await parser.fetchAllFeedsAsync()
@@ -398,10 +422,41 @@ struct FeedTab: View {
         return blocks
     }
 
+    /// Pick items with max 1 per source and spread across categories
+    private func diversePick(from items: [FeedItem], count: Int) -> [FeedItem] {
+        var result: [FeedItem] = []
+        var usedSources = Set<String>()
+        var usedCategories = [String: Int]()
+
+        for item in items where result.count < count {
+            let source = item.source
+            let category = item.category
+            // Max 1 per source
+            if usedSources.contains(source) { continue }
+            // Max 1 per category — ensures no single category dominates the briefing
+            if (usedCategories[category] ?? 0) >= 1 { continue }
+            result.append(item)
+            usedSources.insert(source)
+            usedCategories[category, default: 0] += 1
+        }
+
+        // If not enough diverse items, fill from remaining
+        if result.count < count {
+            for item in items where result.count < count {
+                if !result.contains(where: { $0.id == item.id }) {
+                    result.append(item)
+                }
+            }
+        }
+        return result
+    }
+
     private func tapAction(_ item: FeedItem) {
         PreferenceEngine.shared.recordTap(on: item)
-        ReadingStreakManager.shared.recordRead()
-        ReadStateManager.shared.markRead(item)
+        if !ReadStateManager.shared.isRead(item) {
+            ReadingStreakManager.shared.recordRead()
+            ReadStateManager.shared.markRead(item)
+        }
         selectedItem = item
     }
 
@@ -451,11 +506,13 @@ struct FeedTab: View {
                             .font(.caption.weight(.semibold))
                             .padding(.horizontal, 18)
                             .padding(.vertical, 9)
-                            .background(
-                                selectedCategory == cat
-                                    ? AnyShapeStyle(.arcaGradient)
-                                    : AnyShapeStyle(Color(.tertiarySystemGroupedBackground))
-                            )
+                            .background {
+                                if selectedCategory == cat {
+                                    LinearGradient.arcaGradient
+                                } else {
+                                    Color(.tertiarySystemGroupedBackground)
+                                }
+                            }
                             .foregroundColor(selectedCategory == cat ? .white : .secondary)
                             .clipShape(Capsule())
                     }
@@ -486,7 +543,7 @@ struct BookmarksTab: View {
     @State private var selectedItem: FeedItem?
 
     private var savedItems: [FeedItem] {
-        parser.items.filter { bookmarks.isBookmarked($0) }
+        bookmarks.allBookmarkedItems(liveItems: parser.items)
     }
 
     var body: some View {
@@ -523,7 +580,7 @@ struct BookmarksTab: View {
             .background(Color(.systemGroupedBackground))
             .navigationTitle("Saved")
             .fullScreenCover(item: $selectedItem) { item in
-                ArticleReaderView(item: item)
+                NativeReaderView(item: item)
             }
         }
     }
@@ -534,14 +591,16 @@ struct SavedArticleRow: View {
 
     var body: some View {
         HStack(spacing: 14) {
-            // Image
-            Color(.tertiarySystemGroupedBackground)
-                .frame(width: 80, height: 80)
-                .overlay(
-                    CachedAsyncImage(url: item.imageURL)
-                        .scaledToFill()
-                )
-                .clipShape(RoundedRectangle(cornerRadius: 10))
+            // Image — only show if available
+            if item.hasQualityImage, item.imageURL != nil {
+                Color(.tertiarySystemGroupedBackground)
+                    .frame(width: 80, height: 80)
+                    .overlay(
+                        CachedAsyncImage(url: item.imageURL)
+                            .scaledToFill()
+                    )
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
+            }
 
             VStack(alignment: .leading, spacing: 5) {
                 Text(item.source)
@@ -582,389 +641,6 @@ struct SavedArticleRow: View {
         .padding(12)
         .background(Color(.secondarySystemGroupedBackground))
         .clipShape(RoundedRectangle(cornerRadius: 14))
-    }
-}
-
-// MARK: - Shorts Tab (Full-Screen Vertical Swipe)
-
-struct ShortsTab: View {
-    @ObservedObject var parser: FeedParser
-    @State private var currentIndex = 0
-    @State private var hasTriedRefresh = false
-    /// Track which item IDs we've already recorded taps for this session
-    @State private var recordedIDs: Set<String> = []
-
-    private var shortItems: [FeedItem] {
-        parser.items.filter { $0.isShort }
-    }
-
-    /// Safe index — clamps to valid range
-    private var safeIndex: Int {
-        guard !shortItems.isEmpty else { return 0 }
-        return min(currentIndex, shortItems.count - 1)
-    }
-
-    var body: some View {
-        ZStack {
-            Color.black.ignoresSafeArea()
-
-            if shortItems.isEmpty {
-                shortsEmptyState
-                    .onAppear {
-                        // If no shorts yet and we haven't tried, trigger a refresh
-                        if !hasTriedRefresh && !parser.isLoading {
-                            hasTriedRefresh = true
-                            parser.fetchAllFeeds()
-                        }
-                    }
-            } else {
-                // Simple one-at-a-time player — no rotation trick (causes rendering artifacts).
-                // Shows current short full-screen with swipe up/down to navigate.
-                ShortPlayerPage(
-                    item: shortItems[safeIndex],
-                    isActive: true
-                )
-                .id(shortItems[safeIndex].id) // Force new WebView per video
-                .ignoresSafeArea()
-                .gesture(
-                    DragGesture(minimumDistance: 50)
-                        .onEnded { value in
-                            // Swipe up → next, swipe down → previous
-                            if value.translation.height < -50 && currentIndex < shortItems.count - 1 {
-                                withAnimation { currentIndex += 1 }
-                            } else if value.translation.height > 50 && currentIndex > 0 {
-                                withAnimation { currentIndex -= 1 }
-                            }
-                        }
-                )
-                .onAppear {
-                    let item = shortItems[safeIndex]
-                    if !recordedIDs.contains(item.id) {
-                        recordedIDs.insert(item.id)
-                        PreferenceEngine.shared.recordTap(on: item)
-                        ReadingStreakManager.shared.recordRead()
-                    }
-                    ReadStateManager.shared.markRead(item)
-                }
-                .onChange(of: currentIndex) { newIndex in
-                    guard newIndex >= 0, newIndex < shortItems.count else { return }
-                    let item = shortItems[newIndex]
-                    if !recordedIDs.contains(item.id) {
-                        recordedIDs.insert(item.id)
-                        PreferenceEngine.shared.recordTap(on: item)
-                        ReadingStreakManager.shared.recordRead()
-                    }
-                    ReadStateManager.shared.markRead(item)
-                }
-            }
-        }
-    }
-
-    private var shortsEmptyState: some View {
-        VStack(spacing: 16) {
-            if parser.isLoading {
-                ProgressView()
-                    .tint(.white)
-                    .scaleEffect(1.2)
-                Text("Loading shorts...")
-                    .font(.headline)
-                    .foregroundColor(.white.opacity(0.7))
-            } else {
-                Image(systemName: "bolt.circle")
-                    .font(.system(size: 48))
-                    .foregroundColor(.white.opacity(0.3))
-                Text("No shorts yet")
-                    .font(.headline)
-                    .foregroundColor(.white.opacity(0.7))
-                Text("Quick tech clips from TechLinked,\nShortCircuit, and more.")
-                    .font(.subheadline)
-                    .foregroundColor(.white.opacity(0.4))
-                    .multilineTextAlignment(.center)
-                    .padding(.horizontal, 40)
-
-                Button {
-                    parser.fetchAllFeeds()
-                } label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: "arrow.clockwise")
-                        Text("Refresh")
-                    }
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundColor(.black)
-                    .padding(.horizontal, 20)
-                    .padding(.vertical, 10)
-                    .background(Color.arcaOrange)
-                    .clipShape(Capsule())
-                }
-                .padding(.top, 8)
-            }
-        }
-    }
-}
-
-// MARK: - Single Short Page
-
-private struct ShortPlayerPage: View {
-    let item: FeedItem
-    let isActive: Bool
-    @ObservedObject private var bookmarks = BookmarkManager.shared
-
-    private var isBookmarked: Bool { bookmarks.isBookmarked(item) }
-
-    /// Extract YouTube video ID from the item URL.
-    private var videoID: String? {
-        // /watch?v=VIDEO_ID (standard YouTube URL from RSS)
-        if let components = URLComponents(url: item.url, resolvingAgainstBaseURL: false),
-           let vid = components.queryItems?.first(where: { $0.name == "v" })?.value {
-            return vid
-        }
-        // /shorts/VIDEO_ID (direct shorts URL)
-        let path = item.url.path
-        if path.hasPrefix("/shorts/") {
-            let id = String(path.dropFirst("/shorts/".count))
-            if !id.isEmpty { return id }
-        }
-        return nil
-    }
-
-    var body: some View {
-        ZStack {
-            Color.black.ignoresSafeArea()
-
-            if let videoID = videoID, isActive {
-                ShortEmbedWebView(videoID: videoID)
-                    .ignoresSafeArea()
-            } else if let videoID = videoID {
-                // Inactive — show thumbnail as placeholder
-                CachedAsyncImage(url: URL(string: "https://img.youtube.com/vi/\(videoID)/maxresdefault.jpg"))
-                    .scaledToFill()
-                    .ignoresSafeArea()
-            }
-
-            // Bottom overlay: title + source + actions
-            VStack {
-                Spacer()
-
-                HStack(alignment: .bottom, spacing: 16) {
-                    // Text info
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text(item.source)
-                            .font(.caption.weight(.bold))
-                            .foregroundColor(.white.opacity(0.7))
-
-                        Text(item.title)
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundColor(.white)
-                            .lineLimit(3)
-                            .multilineTextAlignment(.leading)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-
-                    // Side action buttons
-                    VStack(spacing: 20) {
-                        Button {
-                            bookmarks.toggle(item)
-                        } label: {
-                            VStack(spacing: 4) {
-                                Image(systemName: isBookmarked ? "bookmark.fill" : "bookmark")
-                                    .font(.title3)
-                                Text("Save")
-                                    .font(.system(size: 10))
-                            }
-                            .foregroundColor(.white)
-                        }
-
-                        ShareLink(item: item.url) {
-                            VStack(spacing: 4) {
-                                Image(systemName: "arrowshape.turn.up.right.fill")
-                                    .font(.title3)
-                                Text("Share")
-                                    .font(.system(size: 10))
-                            }
-                            .foregroundColor(.white)
-                        }
-                    }
-                }
-                .padding(.horizontal, 16)
-                .padding(.bottom, 16)
-                .background(
-                    LinearGradient(
-                        colors: [.clear, .black.opacity(0.7), .black.opacity(0.85)],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    )
-                    .frame(height: 200)
-                    .allowsHitTesting(false),
-                    alignment: .bottom
-                )
-            }
-        }
-    }
-}
-
-// MARK: - YouTube Shorts WebView
-
-#if os(iOS)
-private struct ShortEmbedWebView: UIViewRepresentable {
-    let videoID: String
-
-    func makeUIView(context: Context) -> WKWebView {
-        let config = WKWebViewConfiguration()
-        config.allowsInlineMediaPlayback = true
-        config.mediaTypesRequiringUserActionForPlayback = []
-
-        let webView = WKWebView(frame: .zero, configuration: config)
-        webView.isOpaque = false
-        webView.backgroundColor = .black
-        webView.scrollView.backgroundColor = .black
-        webView.scrollView.isScrollEnabled = false
-        webView.scrollView.bounces = false
-        webView.scrollView.contentInsetAdjustmentBehavior = .never
-        webView.navigationDelegate = context.coordinator
-
-        loadVideo(in: webView)
-        return webView
-    }
-
-    func updateUIView(_ webView: WKWebView, context: Context) {
-        if context.coordinator.currentVideoID != videoID {
-            context.coordinator.currentVideoID = videoID
-            loadVideo(in: webView)
-        }
-    }
-
-    static func dismantleUIView(_ webView: WKWebView, coordinator: Coordinator) {
-        webView.stopLoading()
-        webView.loadHTMLString("", baseURL: nil)
-    }
-
-    func makeCoordinator() -> Coordinator {
-        Coordinator(videoID: videoID)
-    }
-
-    private func loadVideo(in webView: WKWebView) {
-        let safeID = String(videoID.unicodeScalars.filter {
-            CharacterSet.alphanumerics.contains($0) || $0 == "-" || $0 == "_"
-        })
-        guard !safeID.isEmpty else { return }
-
-        // Load the YouTube embed URL directly as a request (NOT loadHTMLString).
-        // This gives proper origin headers so embeds work, and shows only the
-        // clean video player without YouTube's full page chrome.
-        guard let url = URL(string: "https://www.youtube.com/embed/\(safeID)?autoplay=1&playsinline=1&controls=1&rel=0&modestbranding=1&loop=1&playlist=\(safeID)") else { return }
-        var request = URLRequest(url: url)
-        request.setValue("https://www.youtube.com/", forHTTPHeaderField: "Referer")
-        webView.load(request)
-    }
-
-    class Coordinator: NSObject, WKNavigationDelegate {
-        var currentVideoID: String
-        init(videoID: String) {
-            self.currentVideoID = videoID
-            super.init()
-        }
-
-        func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
-            decisionHandler(.allow)
-        }
-    }
-}
-#endif
-
-struct VideoCardView: View {
-    let item: FeedItem
-    @ObservedObject private var bookmarks = BookmarkManager.shared
-    @ObservedObject private var readState = ReadStateManager.shared
-
-    private var isRead: Bool { readState.isRead(item) }
-    private var isBookmarked: Bool { bookmarks.isBookmarked(item) }
-
-    /// Extract YouTube video ID from a youtube.com/watch URL.
-    private var youtubeThumbURL: URL? {
-        // YouTube watch URLs: youtube.com/watch?v=VIDEO_ID
-        if let components = URLComponents(url: item.url, resolvingAgainstBaseURL: false),
-           let videoID = components.queryItems?.first(where: { $0.name == "v" })?.value {
-            return URL(string: "https://img.youtube.com/vi/\(videoID)/maxresdefault.jpg")
-        }
-        return item.imageURL
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            // Video thumbnail with play button overlay
-            ZStack {
-                Color(.tertiarySystemGroupedBackground)
-                    .frame(height: 200)
-                    .overlay(
-                        CachedAsyncImage(url: youtubeThumbURL ?? item.imageURL)
-                            .scaledToFill()
-                    )
-                    .clipped()
-
-                // Play button overlay
-                Circle()
-                    .fill(.black.opacity(0.5))
-                    .frame(width: 56, height: 56)
-                    .overlay(
-                        Image(systemName: "play.fill")
-                            .font(.title3)
-                            .foregroundColor(.white)
-                            .offset(x: 2)
-                    )
-            }
-
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(spacing: 6) {
-                    Image(systemName: "play.rectangle.fill")
-                        .font(.caption2)
-                        .foregroundColor(.arcaOrange)
-
-                    Text(item.source)
-                        .font(.caption.weight(.bold))
-                        .foregroundColor(.arcaOrange)
-
-                    Text("·")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-
-                    Text(item.pubDate.relativeString)
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-
-                    Spacer()
-
-                    Button {
-                        let impact = UIImpactFeedbackGenerator(style: .medium)
-                        impact.impactOccurred()
-                        bookmarks.toggle(item)
-                    } label: {
-                        Image(systemName: isBookmarked ? "bookmark.fill" : "bookmark")
-                            .foregroundColor(isBookmarked ? .arcaOrange : .secondary.opacity(0.4))
-                    }
-                    .buttonStyle(.plain)
-
-                    ShareLink(item: item.url) {
-                        Image(systemName: "square.and.arrow.up")
-                            .foregroundColor(.secondary.opacity(0.4))
-                    }
-                }
-
-                Text(item.title)
-                    .font(.subheadline.weight(.bold))
-                    .foregroundColor(.primary)
-                    .lineLimit(2)
-
-                if !item.itemDescription.isEmpty {
-                    Text(item.itemDescription)
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                        .lineLimit(2)
-                }
-            }
-            .padding(12)
-        }
-        .background(Color(.secondarySystemGroupedBackground))
-        .clipShape(RoundedRectangle(cornerRadius: 16))
     }
 }
 
@@ -1357,9 +1033,9 @@ struct StoryCardView: View {
     var onDeepDive: (() -> Void)? = nil
     @ObservedObject private var bookmarks = BookmarkManager.shared
     @ObservedObject private var readState = ReadStateManager.shared
-    /// Synced from PreferenceEngine on every render — not stored as @State
-    /// to avoid stale values when SwiftUI reuses or recreates the view.
-    private var isLiked: Bool { PreferenceEngine.shared.isLiked(item) }
+    @ObservedObject private var preferences = PreferenceEngine.shared
+    /// Reads liked state — triggers re-render via preferences.likedVersion
+    private var isLiked: Bool { preferences.isLiked(item) }
     /// Local animation trigger for the heart scale effect
     @State private var heartBounce = false
 
@@ -1369,18 +1045,20 @@ struct StoryCardView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             // Image — tappable to open article (doesn't interfere with action buttons below)
-            Button {
-                onTap?()
-            } label: {
-                Color(.tertiarySystemGroupedBackground)
-                    .frame(height: 200)
-                    .overlay(
-                        CachedAsyncImage(url: item.imageURL)
-                            .scaledToFill()
-                    )
-                    .clipped()
+            if item.hasQualityImage, item.imageURL != nil {
+                Button {
+                    onTap?()
+                } label: {
+                    Color(.tertiarySystemGroupedBackground)
+                        .frame(height: 200)
+                        .overlay(
+                            CachedAsyncImage(url: item.imageURL)
+                                .scaledToFill()
+                        )
+                        .clipped()
+                }
+                .buttonStyle(.plain)
             }
-            .buttonStyle(.plain)
 
             // Content
             VStack(alignment: .leading, spacing: 10) {
@@ -1425,14 +1103,6 @@ struct StoryCardView: View {
                         .foregroundColor(.secondary)
 
                     Text(item.pubDate.relativeString)
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-
-                    Text("·")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-
-                    Text("\(item.readingTime) min read")
                         .font(.caption)
                         .foregroundColor(.secondary)
 
@@ -1609,12 +1279,7 @@ struct MoreCoverageView: View {
         .padding(.bottom, 10)
         .background(Color(.secondarySystemGroupedBackground))
         .clipShape(
-            .rect(
-                topLeadingRadius: 0,
-                bottomLeadingRadius: 16,
-                bottomTrailingRadius: 16,
-                topTrailingRadius: 0
-            )
+            RoundedRectangle(cornerRadius: 16)
         )
         .padding(.top, -8) // tuck under the card above
     }
@@ -1627,21 +1292,23 @@ struct MediumCardView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            // Image — overlay pattern prevents .fill from blowing out layout
-            Color(.tertiarySystemGroupedBackground)
-                .frame(height: 110)
-                .overlay(
-                    CachedAsyncImage(url: item.imageURL)
-                        .scaledToFill()
-                )
-                .clipped()
+            // Image — only show if available
+            if item.hasQualityImage, item.imageURL != nil {
+                Color(.tertiarySystemGroupedBackground)
+                    .frame(height: 110)
+                    .overlay(
+                        CachedAsyncImage(url: item.imageURL)
+                            .scaledToFill()
+                    )
+                    .clipped()
+            }
 
             // Text — fixed height so all pairs match
             VStack(alignment: .leading, spacing: 5) {
                 Text(item.title)
                     .font(.caption.weight(.semibold))
                     .foregroundColor(.primary)
-                    .lineLimit(2)
+                    .lineLimit(item.hasQualityImage ? 2 : 4)
 
                 Spacer(minLength: 0)
 
@@ -1658,70 +1325,7 @@ struct MediumCardView: View {
                 }
             }
             .padding(10)
-            .frame(height: 76)
-        }
-        .background(Color(.secondarySystemGroupedBackground))
-        .clipShape(RoundedRectangle(cornerRadius: 12))
-    }
-}
-
-// MARK: - Compact Video Card (horizontal scroll in feed)
-
-struct CompactVideoCard: View {
-    let item: FeedItem
-
-    private var youtubeThumbURL: URL? {
-        if let components = URLComponents(url: item.url, resolvingAgainstBaseURL: false),
-           let videoID = components.queryItems?.first(where: { $0.name == "v" })?.value {
-            return URL(string: "https://img.youtube.com/vi/\(videoID)/maxresdefault.jpg")
-        }
-        return nil
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            ZStack {
-                Color(.tertiarySystemGroupedBackground)
-                    .frame(height: 146)
-                    .overlay(
-                        CachedAsyncImage(url: youtubeThumbURL ?? item.imageURL)
-                            .scaledToFill()
-                    )
-                    .clipped()
-
-                Circle()
-                    .fill(.black.opacity(0.5))
-                    .frame(width: 40, height: 40)
-                    .overlay(
-                        Image(systemName: "play.fill")
-                            .font(.caption)
-                            .foregroundColor(.white)
-                            .offset(x: 1)
-                    )
-            }
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text(item.title)
-                    .font(.caption.weight(.semibold))
-                    .foregroundColor(.primary)
-                    .lineLimit(2)
-
-                HStack(spacing: 4) {
-                    Image(systemName: "play.rectangle.fill")
-                        .font(.system(size: 8))
-                        .foregroundColor(.arcaOrange)
-                    Text(item.source)
-                        .font(.caption2.weight(.medium))
-                        .foregroundColor(.arcaOrange)
-                    Text("·")
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
-                    Text(item.pubDate.relativeString)
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
-                }
-            }
-            .padding(10)
+            .frame(minHeight: 76)
         }
         .background(Color(.secondarySystemGroupedBackground))
         .clipShape(RoundedRectangle(cornerRadius: 12))
@@ -1754,17 +1358,20 @@ struct WideRowView: View {
 
             Spacer(minLength: 0)
 
-            // Image
-            Color(.tertiarySystemGroupedBackground)
-                .frame(width: 120, height: 90)
-                .overlay(
-                    CachedAsyncImage(url: item.imageURL)
-                        .scaledToFill()
-                )
-                .clipShape(RoundedRectangle(cornerRadius: 10))
+            // Image — only show if available
+            if item.hasQualityImage, item.imageURL != nil {
+                Color(.tertiarySystemGroupedBackground)
+                    .frame(width: 120, height: 90)
+                    .overlay(
+                        CachedAsyncImage(url: item.imageURL)
+                            .scaledToFill()
+                    )
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
+            }
         }
         .padding(14)
         .background(Color(.secondarySystemGroupedBackground))
         .clipShape(RoundedRectangle(cornerRadius: 14))
     }
 }
+

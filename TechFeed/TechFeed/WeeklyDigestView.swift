@@ -38,13 +38,13 @@ struct WeeklyDigestView: View {
                             Image(systemName: "chart.bar.fill")
                                 .font(.caption)
                                 .foregroundColor(.arcaOrange)
-                            Text("WEEKLY DIGEST")
+                            Text("FEED DIGEST")
                                 .font(.caption.weight(.heavy))
                                 .foregroundColor(.arcaOrange)
                                 .tracking(0.5)
                         }
 
-                        Text("Your Week in Tech")
+                        Text("Your Feed at a Glance")
                             .font(.title2.weight(.bold))
 
                         Text("\(items.count) stories from \(totalSources) sources")

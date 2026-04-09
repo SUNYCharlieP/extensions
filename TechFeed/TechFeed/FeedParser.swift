@@ -12,8 +12,8 @@ class FeedParser: ObservableObject {
     private var needsRefresh = false
     private let ogImageSession: URLSession = {
         let config = URLSessionConfiguration.default
-        config.httpMaximumConnectionsPerHost = 6
-        config.timeoutIntervalForResource = 12
+        config.httpMaximumConnectionsPerHost = 3
+        config.timeoutIntervalForResource = 10
         return URLSession(configuration: config)
     }()
 
@@ -23,65 +23,7 @@ class FeedParser: ObservableObject {
             return
         }
         isLoading = true
-        var collectedItems: [FeedItem] = []
-        let group = DispatchGroup()
-
-        for feed in SourceManager.shared.enabledFeeds {
-            guard let url = URL(string: feed.url) else { continue }
-            group.enter()
-            URLSession.shared.dataTask(with: url) { [weak self] data, _, error in
-                defer { group.leave() }
-                guard let self = self, let data = data, error == nil else { return }
-
-                let delegate = FeedXMLParserDelegate(sourceName: feed.name, category: feed.category, isVideo: feed.isVideo, isShort: feed.isShort)
-                let parser = XMLParser(data: data)
-                parser.delegate = delegate
-                parser.parse()
-
-                self.lock.lock()
-                collectedItems.append(contentsOf: delegate.items)
-                self.lock.unlock()
-            }.resume()
-        }
-
-        // Process on background thread — dedup is O(n²) and shouldn't block UI
-        group.notify(queue: .global(qos: .userInitiated)) { [weak self] in
-            guard let self = self else { return }
-            self.lock.lock()
-            let snapshot = collectedItems
-            self.lock.unlock()
-            let filtered = snapshot.filter { !Self.isPromo($0) }
-            let categorized = Self.categorize(filtered)
-            let deduped = Self.deduplicate(categorized, preferences: self.preferences)
-            let scored = self.preferences.scoreItems(deduped)
-            let diverse = Self.diversify(scored)
-            var final = Self.promoteHero(diverse)
-            // Precompute derived properties once (isTrending, readingTime, hasQualityImage)
-            for i in final.indices { final[i].computeDerivedProperties() }
-
-            // Widget data & notifications can be prepared off main thread
-            Self.updateWidgetData(final)
-            NotificationManager.shared.checkForBreakingStories(final)
-
-            DispatchQueue.main.async {
-                self.items = final
-                self.isLoading = false
-                self.fetchMissingImages()
-                // Snapshot bookmarked URLs on main thread (BookmarkManager isn't thread-safe),
-                // then dispatch heavy I/O to background
-                let bookmarkedSnapshot = BookmarkManager.shared.bookmarkedURLs
-                DispatchQueue.global(qos: .utility).async {
-                    OfflineCacheManager.shared.cacheBookmarkedArticles(from: final, bookmarkedURLs: bookmarkedSnapshot)
-                    OfflineCacheManager.shared.pruneOldCache()
-                }
-                for pending in self.pendingContinuations { pending.resume() }
-                self.pendingContinuations.removeAll()
-                if self.needsRefresh {
-                    self.needsRefresh = false
-                    self.fetchAllFeeds()
-                }
-            }
-        }
+        startFetch(continuation: nil)
     }
 
     /// Push top stories to the widget via shared UserDefaults.
@@ -113,14 +55,16 @@ class FeedParser: ObservableObject {
         }
     }
 
-    private func startFetch(continuation: CheckedContinuation<Void, Never>) {
+    private func startFetch(continuation: CheckedContinuation<Void, Never>?) {
         var collectedItems: [FeedItem] = []
         let group = DispatchGroup()
 
         for feed in SourceManager.shared.enabledFeeds {
             guard let url = URL(string: feed.url) else { continue }
             group.enter()
-            URLSession.shared.dataTask(with: url) { [weak self] data, _, error in
+            var request = URLRequest(url: url)
+            request.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15", forHTTPHeaderField: "User-Agent")
+            URLSession.shared.dataTask(with: request) { [weak self] data, _, error in
                 defer { group.leave() }
                 guard let self = self, let data = data, error == nil else { return }
 
@@ -137,7 +81,7 @@ class FeedParser: ObservableObject {
 
         group.notify(queue: .global(qos: .userInitiated)) { [weak self] in
             guard let self = self else {
-                continuation.resume()
+                continuation?.resume()
                 return
             }
             self.lock.lock()
@@ -165,7 +109,7 @@ class FeedParser: ObservableObject {
                     OfflineCacheManager.shared.cacheBookmarkedArticles(from: final, bookmarkedURLs: bookmarkedSnapshot)
                     OfflineCacheManager.shared.pruneOldCache()
                 }
-                continuation.resume()
+                continuation?.resume()
                 for pending in self.pendingContinuations { pending.resume() }
                 self.pendingContinuations.removeAll()
                 if self.needsRefresh {
@@ -180,8 +124,8 @@ class FeedParser: ObservableObject {
         let missing = items.filter { $0.imageURL == nil }
         guard !missing.isEmpty else { return }
 
-        // Limit to 20 requests to avoid flooding the network
-        for item in missing.prefix(20) {
+        // Limit to 10 requests to avoid memory pressure
+        for item in missing.prefix(10) {
             let itemID = item.id
             let articleURL = item.url
             var request = URLRequest(url: articleURL)
@@ -189,7 +133,8 @@ class FeedParser: ObservableObject {
 
             ogImageSession.dataTask(with: request) { [weak self] data, _, _ in
                 guard let data = data,
-                      let html = String(data: data, encoding: .utf8).map({ String($0.prefix(150_000)) }) else { return }
+                      let fullHTML = String(data: data, encoding: .utf8) else { return }
+                let html = String(fullHTML.prefix(50_000))
 
                 guard let imageStr = Self.extractBestImage(from: html, pageURL: articleURL),
                       let imageURL = URL(string: imageStr) else { return }
@@ -245,6 +190,16 @@ class FeedParser: ObservableObject {
     private static func deduplicate(_ items: [FeedItem], preferences: PreferenceEngine) -> [FeedItem] {
         guard !items.isEmpty else { return items }
 
+        // First pass: remove exact URL duplicates (e.g., Techmeme rewriting to a source already in the feed)
+        var seenURLs = Set<String>()
+        let uniqueItems = items.filter { item in
+            let key = item.url.absoluteString
+            guard !seenURLs.contains(key) else { return false }
+            seenURLs.insert(key)
+            return true
+        }
+        let items = uniqueItems
+
         var result: [FeedItem] = []
         var usedIndices = Set<Int>()
 
@@ -295,7 +250,8 @@ class FeedParser: ObservableObject {
             }
 
             result.append(bestItem)
-            usedIndices.insert(bestIdx)
+            // Mark all group members (including i) as used
+            for idx in group { usedIndices.insert(idx) }
         }
 
         return result
@@ -319,7 +275,7 @@ class FeedParser: ObservableObject {
         let twoHourSlot = Int(Date().timeIntervalSince1970) / 7200
         let heroIndex = candidates[twoHourSlot % candidates.count].offset
 
-        guard heroIndex != 0 else { return items }
+        guard heroIndex != 0, heroIndex < items.count else { return items }
 
         var reordered = items
         let hero = reordered.remove(at: heroIndex)
@@ -350,9 +306,12 @@ class FeedParser: ObservableObject {
             let scoreA = buckets[a]!.first?.preferenceScore ?? 0
             let scoreB = buckets[b]!.first?.preferenceScore ?? 0
             if abs(scoreA - scoreB) < 0.001 {
-                // Tie-break with slight randomization based on time so feed feels fresh
+                // Tie-break: rotate order hourly using a stable hash (not Swift's randomized hashValue)
                 let slot = Int(Date().timeIntervalSince1970) / 3600
-                return (a.hashValue ^ slot) < (b.hashValue ^ slot)
+                func stableHash(_ s: String) -> Int {
+                    s.utf8.reduce(5381) { ($0 &<< 5) &+ $0 &+ Int($1) }
+                }
+                return (stableHash(a) ^ slot) < (stableHash(b) ^ slot)
             }
             return scoreA > scoreB
         }
@@ -363,6 +322,7 @@ class FeedParser: ObservableObject {
 
         while result.count < totalCount {
             var addedThisRound = false
+            var skippedSources: [(String, [FeedItem])] = []
 
             for source in sourceOrder {
                 guard var queue = sourceQueues[source], !queue.isEmpty else { continue }
@@ -370,7 +330,16 @@ class FeedParser: ObservableObject {
                 // Check consecutive limit: skip if last 2 items are from this source
                 let tail = result.suffix(2)
                 if tail.count == 2 && tail.allSatisfy({ $0.source == source }) {
+                    skippedSources.append((source, queue))
                     continue
+                }
+                // Prefer to avoid 3+ consecutive items from the same category
+                if let next = queue.first {
+                    let catTail = result.suffix(2)
+                    if catTail.count == 2 && catTail.allSatisfy({ $0.category == next.category }) {
+                        skippedSources.append((source, queue))
+                        continue
+                    }
                 }
 
                 result.append(queue.removeFirst())
@@ -378,10 +347,26 @@ class FeedParser: ObservableObject {
                 addedThisRound = true
             }
 
-            // Safety: if no source could add (shouldn't happen), drain remaining
+            // If no source passed both checks, relax the category check and add from skipped
+            if !addedThisRound && !skippedSources.isEmpty {
+                for (source, var queue) in skippedSources {
+                    guard !queue.isEmpty else { continue }
+                    // Still enforce source-consecutive limit, but allow category runs
+                    let tail = result.suffix(2)
+                    if tail.count == 2 && tail.allSatisfy({ $0.source == source }) {
+                        continue
+                    }
+                    result.append(queue.removeFirst())
+                    sourceQueues[source] = queue
+                    addedThisRound = true
+                    break
+                }
+            }
+
+            // Final safety: drain remaining if truly stuck
             if !addedThisRound {
                 for source in sourceOrder {
-                    if let queue = sourceQueues[source] {
+                    if let queue = sourceQueues[source], !queue.isEmpty {
                         result.append(contentsOf: queue)
                         sourceQueues[source] = []
                     }
@@ -446,8 +431,9 @@ class FeedParser: ObservableObject {
     /// the description mentions iOS/iPhone.
     private static func categorize(_ items: [FeedItem]) -> [FeedItem] {
         return items.map { item in
-            // HN items always stay in HN
+            // HN, Reviews, and Android items always keep their source category
             if item.source == "Hacker News" { return item }
+            if item.category == "Reviews" || item.isVideo { return item }
 
             var mutItem = item
             let title = item.title.lowercased()
@@ -478,6 +464,10 @@ class FeedParser: ObservableObject {
         "affiliate", "sponsored", "shop now", "buy now", "limited time offer",
         "price drop", "lowest price", "black friday", "cyber monday",
         "gift guide", "buying guide",
+        // Filter deal roundup / freebie posts (low-quality aggregation)
+        "deals and freebies", "app deals", "freebies:", "today's deals",
+        "best prices", "deals today", "deals roundup", "deals of the week",
+        "deals for", "deals this week",
     ]
 
     private static func isPromo(_ item: FeedItem) -> Bool {
@@ -512,7 +502,8 @@ class FeedParser: ObservableObject {
         for regex in metaImagePatterns {
             if let match = regex.firstMatch(in: html, range: range),
                let urlRange = Range(match.range(at: 1), in: html) {
-                let url = String(html[urlRange])
+                var url = String(html[urlRange])
+                if url.hasPrefix("//") { url = "https:" + url }
                 if url.hasPrefix("http") { return url }
             }
         }
@@ -534,7 +525,8 @@ class FeedParser: ObservableObject {
         for regex in linkImagePatterns {
             if let match = regex.firstMatch(in: html, range: range),
                let urlRange = Range(match.range(at: 1), in: html) {
-                let url = String(html[urlRange])
+                var url = String(html[urlRange])
+                if url.hasPrefix("//") { url = "https:" + url }
                 if url.hasPrefix("http") { return url }
             }
         }
@@ -677,8 +669,11 @@ private class FeedXMLParserDelegate: NSObject, XMLParserDelegate {
                 currentElement = elementName
             }
 
-            // Reset date when a higher-priority date element starts (prevents concatenation)
+            // Reset date when a date element starts.
+            // pubDate/published always reset; updated only resets if no date yet.
             if elementName == "pubDate" || elementName == "published" {
+                currentPubDate = ""
+            } else if elementName == "updated" && currentPubDate.isEmpty {
                 currentPubDate = ""
             }
 
@@ -720,8 +715,13 @@ private class FeedXMLParserDelegate: NSObject, XMLParserDelegate {
         case "description", "summary", "content": currentDescription += string
         case "encoded", "content:encoded": currentContentEncoded += string
         case "link": currentLink += string
-        case "pubDate", "published", "updated":
+        case "pubDate", "published":
             currentPubDate += string
+        case "updated":
+            // Only use updated if no pubDate/published was found
+            if currentPubDate.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                currentPubDate += string
+            }
         case "yt:videoId", "videoId":
             currentVideoId += string
         default: break
@@ -734,7 +734,7 @@ private class FeedXMLParserDelegate: NSObject, XMLParserDelegate {
         if elementName == "item" || elementName == "entry" {
             isInsideItem = false
 
-            let title = currentTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+            let title = currentTitle.trimmingCharacters(in: .whitespacesAndNewlines).strippingHTMLTags()
             let rawDescription = currentDescription.trimmingCharacters(in: .whitespacesAndNewlines)
             let desc = rawDescription.strippingHTMLTags()
             let link = currentLink.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -766,10 +766,19 @@ private class FeedXMLParserDelegate: NSObject, XMLParserDelegate {
                 }
             }
 
+            // Techmeme is a link aggregator — its <link> points to Techmeme's own page,
+            // but the actual source article URL is in the first <a href> of the description.
+            var articleURL = url
+            if sourceName == "Techmeme" {
+                if let sourceURL = Self.extractTechmemeSourceURL(from: rawDescription) {
+                    articleURL = sourceURL
+                }
+            }
+
             var item = FeedItem(
                 title: title,
                 itemDescription: desc,
-                url: url,
+                url: articleURL,
                 imageURL: imageURL,
                 source: sourceName,
                 category: category,
@@ -777,12 +786,36 @@ private class FeedXMLParserDelegate: NSObject, XMLParserDelegate {
             )
             item.isVideo = isVideo
             item.isShort = isShort
+            // Store full HTML for native reader — prefer content:encoded, fall back to raw description
+            let contentEncoded = currentContentEncoded.trimmingCharacters(in: .whitespacesAndNewlines)
+            item.contentHTML = contentEncoded.isEmpty ? rawDescription : contentEncoded
             items.append(item)
         }
 
         if isInsideItem && elementName == currentElement {
             currentElement = ""
         }
+    }
+
+    /// Extract the actual source article URL from Techmeme's description HTML.
+    /// Techmeme embeds the source URL as the first <a href="..."> pointing to an external site.
+    private static func extractTechmemeSourceURL(from html: String) -> URL? {
+        guard let regex = try? NSRegularExpression(
+            pattern: "<a\\s[^>]*href\\s*=\\s*[\"']([^\"']+)[\"']",
+            options: .caseInsensitive
+        ) else { return nil }
+        let range = NSRange(html.startIndex..., in: html)
+        let matches = regex.matches(in: html, range: range)
+        for match in matches.prefix(5) {
+            guard let urlRange = Range(match.range(at: 1), in: html) else { continue }
+            let urlStr = String(html[urlRange])
+            // Skip links back to Techmeme itself
+            if urlStr.contains("techmeme.com") { continue }
+            if let url = URL(string: urlStr), urlStr.hasPrefix("http") {
+                return url
+            }
+        }
+        return nil
     }
 
     private static let imgSrcRegex: NSRegularExpression? =
@@ -800,7 +833,7 @@ private class FeedXMLParserDelegate: NSObject, XMLParserDelegate {
 
 // MARK: - Date Parsing
 
-private enum DateParsing {
+enum DateParsing {
     static let formatters: [DateFormatter] = {
         let formats = [
             "EEE, dd MMM yyyy HH:mm:ss Z",

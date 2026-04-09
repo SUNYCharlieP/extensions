@@ -1,6 +1,6 @@
 import Foundation
 
-class PreferenceEngine {
+class PreferenceEngine: ObservableObject {
     static let shared = PreferenceEngine()
 
     private let defaults = UserDefaults.standard
@@ -16,6 +16,8 @@ class PreferenceEngine {
     private var cachedSources: [String: Int]
     private var cachedKeywords: [String: Int]
     private var cachedTotalTaps: Int
+    /// Published so SwiftUI views observing this engine update when likes change.
+    @Published private(set) var likedVersion: Int = 0
     private var cachedLikedURLs: Set<String>
 
     private let stopWords: Set<String> = [
@@ -67,6 +69,7 @@ class PreferenceEngine {
         }
         cachedTotalTaps += 3
         lock.unlock()
+        likedVersion += 1
         persistAsync()
     }
 
@@ -82,6 +85,7 @@ class PreferenceEngine {
         }
         cachedTotalTaps = max(0, cachedTotalTaps - 3)
         lock.unlock()
+        likedVersion += 1
         persistAsync()
     }
 

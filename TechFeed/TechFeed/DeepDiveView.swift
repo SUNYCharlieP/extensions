@@ -81,6 +81,11 @@ struct DeepDiveView: View {
 
                             // Read button
                             Button {
+                                PreferenceEngine.shared.recordTap(on: article)
+                                if !ReadStateManager.shared.isRead(article) {
+                                    ReadingStreakManager.shared.recordRead()
+                                    ReadStateManager.shared.markRead(article)
+                                }
                                 selectedArticle = article
                             } label: {
                                 Text("Read full article")
@@ -104,7 +109,7 @@ struct DeepDiveView: View {
                 }
             }
             .fullScreenCover(item: $selectedArticle) { article in
-                ArticleReaderView(item: article)
+                NativeReaderView(item: article)
             }
         }
     }

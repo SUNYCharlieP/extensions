@@ -23,22 +23,27 @@ class NotificationManager {
         let storyKey = top.title.prefix(50).lowercased()
 
         guard storyKey != lastNotified else { return }
-        defaults.set(storyKey, forKey: lastNotifiedKey)
 
-        let content = UNMutableNotificationContent()
-        content.title = "Breaking: \(top.sourceCount) sources"
-        content.body = top.title
-        content.sound = .default
-        content.categoryIdentifier = "BREAKING_STORY"
+        // Only store as notified and send if we have permission
+        center.getNotificationSettings { [weak self] settings in
+            guard let self = self,
+                  settings.authorizationStatus == .authorized else { return }
 
-        let trigger = UNTimeIntervalNotificationTrigger(timeInterval: 1, repeats: false)
-        // Use the story key directly as identifier (deterministic across launches,
-        // unlike hashValue which is randomized per process).
-        let safeID = String(storyKey.unicodeScalars.filter {
-            CharacterSet.alphanumerics.contains($0) || $0 == "-" || $0 == "_" || $0 == " "
-        }.prefix(60))
-        let request = UNNotificationRequest(identifier: "breaking-\(safeID)", content: content, trigger: trigger)
+            self.defaults.set(storyKey, forKey: self.lastNotifiedKey)
 
-        center.add(request)
+            let content = UNMutableNotificationContent()
+            content.title = "Breaking: \(top.sourceCount) sources"
+            content.body = top.title
+            content.sound = .default
+            content.categoryIdentifier = "BREAKING_STORY"
+
+            let trigger = UNTimeIntervalNotificationTrigger(timeInterval: 1, repeats: false)
+            let safeID = String(storyKey.unicodeScalars.filter {
+                CharacterSet.alphanumerics.contains($0) || $0 == "-" || $0 == "_" || $0 == " "
+            }.prefix(60))
+            let request = UNNotificationRequest(identifier: "breaking-\(safeID)", content: content, trigger: trigger)
+
+            self.center.add(request)
+        }
     }
 }

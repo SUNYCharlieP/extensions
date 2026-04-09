@@ -3,17 +3,16 @@ import SwiftUI
 struct OnboardingView: View {
     @ObservedObject private var sourceManager = SourceManager.shared
     @State private var currentPage = 0
-    @State private var selectedCategories: Set<String> = ["Apple", "General Tech", "Hacker News", "Security", "Science", "Videos", "Shorts"]
+    @State private var selectedCategories: Set<String> = ["Apple", "General Tech", "Hacker News", "Security", "Science"]
     var onComplete: () -> Void
 
     private let categories: [(name: String, icon: String, description: String)] = [
         ("Apple", "apple.logo", "iPhone, Mac, iOS, WWDC"),
         ("General Tech", "cpu", "The Verge, Ars Technica, TechCrunch"),
+        ("Reviews", "star.fill", "PCMag, CNET, Tom's Hardware"),
         ("Hacker News", "terminal", "Developer community picks"),
         ("Security", "lock.shield", "Cybersecurity & threats"),
         ("Science", "atom", "Research & space"),
-        ("Videos", "play.rectangle.fill", "MKBHD, Linus Tech Tips, CNET, Bloomberg"),
-        ("Shorts", "bolt.circle.fill", "Quick tech clips under 60 seconds"),
     ]
 
     var body: some View {
@@ -72,7 +71,13 @@ struct OnboardingView: View {
                             .foregroundColor(.white)
                             .frame(maxWidth: .infinity)
                             .padding(.vertical, 16)
-                            .background(currentPage == 2 && selectedCategories.isEmpty ? AnyShapeStyle(Color.gray) : AnyShapeStyle(Color.arcaGradient))
+                            .background {
+                                if currentPage == 2 && selectedCategories.isEmpty {
+                                    Color.gray
+                                } else {
+                                    Color.arcaGradient
+                                }
+                            }
                             .clipShape(RoundedRectangle(cornerRadius: 14))
                     }
                     .padding(.horizontal, 24)
@@ -178,11 +183,13 @@ struct OnboardingView: View {
                                 .font(.title3)
                                 .foregroundColor(selectedCategories.contains(cat.name) ? .white : .arcaOrange)
                                 .frame(width: 44, height: 44)
-                                .background(
-                                    selectedCategories.contains(cat.name)
-                                        ? AnyShapeStyle(Color.arcaGradient)
-                                        : AnyShapeStyle(Color.arcaOrange.opacity(0.12))
-                                )
+                                .background {
+                                    if selectedCategories.contains(cat.name) {
+                                        Color.arcaGradient
+                                    } else {
+                                        Color.arcaOrange.opacity(0.12)
+                                    }
+                                }
                                 .clipShape(RoundedRectangle(cornerRadius: 12))
 
                             VStack(alignment: .leading, spacing: 2) {
