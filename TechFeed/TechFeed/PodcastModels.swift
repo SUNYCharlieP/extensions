@@ -69,7 +69,7 @@ struct PodcastFeed {
         ),
         PodcastFeed(
             name: "Waveform: The MKBHD Podcast",
-            url: "https://feeds.megaphone.fm/waveform",
+            url: "https://feeds.megaphone.fm/STU4418364045",
             artworkURL: "",
             episodeType: .fullEpisode
         ),
@@ -88,6 +88,36 @@ struct PodcastFeed {
         PodcastFeed(
             name: "Accidental Tech Podcast",
             url: "https://atp.fm/episodes?format=rss",
+            artworkURL: "",
+            episodeType: .fullEpisode
+        ),
+        PodcastFeed(
+            name: "Lex Fridman Podcast",
+            url: "https://lexfridman.com/feed/podcast/",
+            artworkURL: "",
+            episodeType: .fullEpisode
+        ),
+        PodcastFeed(
+            name: "This Week in Tech",
+            url: "https://feeds.twit.tv/twit.xml",
+            artworkURL: "",
+            episodeType: .fullEpisode
+        ),
+        PodcastFeed(
+            name: "Darknet Diaries",
+            url: "https://feeds.megaphone.fm/darknetdiaries",
+            artworkURL: "",
+            episodeType: .fullEpisode
+        ),
+        PodcastFeed(
+            name: "Acquired",
+            url: "https://acquired.fm/episodes?format=rss",
+            artworkURL: "",
+            episodeType: .fullEpisode
+        ),
+        PodcastFeed(
+            name: "The Tim Ferriss Show",
+            url: "https://rss.art19.com/tim-ferriss-show",
             artworkURL: "",
             episodeType: .fullEpisode
         ),

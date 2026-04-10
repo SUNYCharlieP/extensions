@@ -176,9 +176,14 @@ enum ReaderContentRules {
         {"trigger":{"url-filter":".*"},"action":{"type":"css-display-none","selector":".ad, .ads, .advert, .advertisement, [class*=\\"adslot\\"], [class*=\\"ad-unit\\"], [class*=\\"ad-wrapper\\"], [class*=\\"ad-container\\"], [data-ad], [data-ad-slot], [data-advertisement], .cookie-banner, .consent-banner, .gdpr, #comments, .disqus, [class*=\\"taboola\\"], [class*=\\"outbrain\\"], [class*=\\"onetrust\\"], [class*=\\"OneTrust\\"], #onetrust-consent-sdk, [class*=\\"evidon\\"], [class*=\\"truste\\"], [id*=\\"consent\\"], [class*=\\"consent-modal\\"], [class*=\\"cookie-notice\\"], [class*=\\"cookie-wall\\"], [class*=\\"c-globalModal\\"], [class*=\\"newsletter-modal\\"], [class*=\\"signup-modal\\"], [class*=\\"overlay-modal\\"]"}}
         """
         entries.append(cssHide)
+        // Whitelist reuters.com — skip all content rules so their consent manager works
+        let reutersBypass = """
+        {"trigger":{"url-filter":".*","if-domain":["*reuters.com"]},"action":{"type":"ignore-previous-rules"}}
+        """
+        entries.append(reutersBypass)
         let rules = "[" + entries.joined(separator: ",") + "]"
 
-        WKContentRuleListStore.default().lookUpContentRuleList(forIdentifier: "ReaderRulesV9") { existing, _ in
+        WKContentRuleListStore.default().lookUpContentRuleList(forIdentifier: "ReaderRulesV10") { existing, _ in
             if let existing = existing {
                 lock.lock()
                 _compiled = existing
@@ -186,7 +191,7 @@ enum ReaderContentRules {
                 return
             }
             WKContentRuleListStore.default().compileContentRuleList(
-                forIdentifier: "ReaderRulesV9",
+                forIdentifier: "ReaderRulesV10",
                 encodedContentRuleList: rules
             ) { ruleList, _ in
                 lock.lock()
@@ -253,8 +258,10 @@ struct ReaderWebView: UIViewRepresentable {
             .overlay-no-scroll, .noscroll,
             [class*="PigeonPaywall"],
             [class*="duet--article--article-body-component"] ~ div[class*="z-"],
-            /* Vox Media / The Verge paywall */
+            /* Vox Media / The Verge paywall + subscription modals */
             [class*="duet--cta"],
+            [class*="duet--commerce"],
+            [class*="subscription-offer"],
             [class*="paywall-overlay"],
             [class*="subscriber-only"],
             [class*="c-entry-content__paywall"],
@@ -283,8 +290,34 @@ struct ReaderWebView: UIViewRepresentable {
 
     private static let postLoadPaywallKill = """
     (function() {
+        // Selectors for subscription modals / paywall overlays to remove entirely
+        var modalSelectors = [
+            '[class*="duet--commerce"]',
+            '[class*="subscription-offer"]',
+            '[class*="duet--cta"]',
+            '[class*="regwall"]',
+            '[class*="Regwall"]',
+            '[class*="piano-"]',
+            '[class*="tp-modal"]',
+            '[class*="tp-backdrop"]',
+            '[class*="PigeonPaywall"]',
+            '[class*="paywall-overlay"]',
+            '[class*="subscribe-wall"]',
+            '[data-piano-id]'
+        ];
+
+        function removeModals() {
+            modalSelectors.forEach(function(sel) {
+                document.querySelectorAll(sel).forEach(function(el) {
+                    el.remove();
+                });
+            });
+        }
+
         function killPaywall() {
             if (!document.body) return;
+            // Remove subscription/paywall modal elements from DOM
+            removeModals();
             // Remove overflow:hidden from body/html that paywalls add
             document.documentElement.style.setProperty('overflow', 'auto', 'important');
             document.body.style.setProperty('overflow', 'auto', 'important');
@@ -326,15 +359,31 @@ struct ReaderWebView: UIViewRepresentable {
         setTimeout(hideJSONErrors, 2000);
         setTimeout(hideJSONErrors, 5000);
         setTimeout(killPaywall, 5000);
-        // Watch for dynamically inserted paywall — auto-disconnect after 10s
+        // Watch for dynamically inserted modals/paywalls and remove immediately
         if (window.MutationObserver && document.body) {
             var calls = 0;
-            var obs = new MutationObserver(function() {
-                if (++calls > 20) { obs.disconnect(); return; }
-                killPaywall();
+            var obs = new MutationObserver(function(mutations) {
+                if (++calls > 50) { obs.disconnect(); return; }
+                mutations.forEach(function(m) {
+                    m.addedNodes.forEach(function(node) {
+                        if (node.nodeType !== 1) return;
+                        var cl = (node.className || '').toString();
+                        if (/duet--commerce|subscription-offer|duet--cta|regwall|piano-|tp-modal|tp-backdrop|PigeonPaywall|paywall-overlay|subscribe-wall/i.test(cl)) {
+                            node.remove();
+                            return;
+                        }
+                        // Also check children of added container
+                        modalSelectors.forEach(function(sel) {
+                            node.querySelectorAll(sel).forEach(function(el) { el.remove(); });
+                        });
+                    });
+                });
+                // Always restore scroll
+                document.documentElement.style.setProperty('overflow', 'auto', 'important');
+                document.body.style.setProperty('overflow', 'auto', 'important');
             });
-            obs.observe(document.body, { childList: true, subtree: false });
-            setTimeout(function() { obs.disconnect(); }, 10000);
+            obs.observe(document.body, { childList: true, subtree: true });
+            setTimeout(function() { obs.disconnect(); }, 15000);
         }
     })();
     """

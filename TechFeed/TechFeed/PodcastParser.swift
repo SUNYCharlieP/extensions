@@ -31,8 +31,16 @@ class PodcastParser: ObservableObject {
                 parser.delegate = delegate
                 parser.parse()
 
+                // Per-feed cap: 10 for snippet feeds (NPR News Now), 50 for everything else.
+                let perFeedLimit = feed.episodeType == .snippet ? 10 : 50
+                let limited = Array(
+                    delegate.episodes
+                        .sorted { $0.pubDate > $1.pubDate }
+                        .prefix(perFeedLimit)
+                )
+
                 self.lock.lock()
-                collected.append(contentsOf: delegate.episodes)
+                collected.append(contentsOf: limited)
                 self.lock.unlock()
             }.resume()
         }
@@ -40,10 +48,11 @@ class PodcastParser: ObservableObject {
         group.notify(queue: .global(qos: .userInitiated)) { [weak self] in
             guard let self = self else { return }
             self.lock.lock()
-            // Sort by date, newest first. Limit to recent episodes.
+            // Sort by date, newest first. Global cap raised from 100 to 600 to accommodate
+            // per-feed limits (13 feeds × 50 = 650 max).
             let sorted = collected
                 .sorted { $0.pubDate > $1.pubDate }
-                .prefix(100)
+                .prefix(600)
             self.lock.unlock()
 
             DispatchQueue.main.async {

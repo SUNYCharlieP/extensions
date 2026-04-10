@@ -4,56 +4,77 @@ struct ListenTab: View {
     @StateObject private var podcastParser = PodcastParser()
     @ObservedObject private var player = AudioPlayerManager.shared
     var body: some View {
-        ScrollView {
-            LazyVStack(spacing: 0) {
-                // Header matching home feed style
-                listenHeader
+        NavigationStack {
+            ScrollView {
+                LazyVStack(spacing: 0) {
+                    // Header matching home feed style
+                    listenHeader
 
-                if podcastParser.isLoading && podcastParser.episodes.isEmpty {
-                    loadingState
-                } else if podcastParser.episodes.isEmpty {
-                    emptyState
-                } else {
-                    // Quick Listen — snippets
-                    if !podcastParser.snippets.isEmpty {
-                        quickListenSection
-                            .padding(.top, 16)
-                    }
+                    if podcastParser.isLoading && podcastParser.episodes.isEmpty {
+                        loadingState
+                    } else if podcastParser.episodes.isEmpty {
+                        emptyState
+                    } else {
+                        // Quick Listen — snippets
+                        if !podcastParser.snippets.isEmpty {
+                            quickListenSection
+                                .padding(.top, 16)
+                        }
 
-                    // Briefings
-                    if !podcastParser.briefings.isEmpty {
-                        episodeSection(
-                            title: "Daily Briefings",
-                            subtitle: "10-15 min tech recaps",
-                            icon: "clock.badge.checkmark",
-                            episodes: podcastParser.briefings
-                        )
-                        .padding(.top, 20)
-                    }
+                        // Shows — horizontal scroll of all podcast shows
+                        if !shows.isEmpty {
+                            showsSection
+                                .padding(.top, 20)
+                        }
 
-                    // Full Episodes
-                    if !podcastParser.fullEpisodes.isEmpty {
-                        episodeSection(
-                            title: "Full Episodes",
-                            subtitle: "Deep dives & discussions",
-                            icon: "headphones",
-                            episodes: podcastParser.fullEpisodes
-                        )
-                        .padding(.top, 20)
+                        // Latest Episodes — vertical list of newest episodes from all shows
+                        if !latestEpisodes.isEmpty {
+                            latestEpisodesSection
+                                .padding(.top, 20)
+                        }
                     }
                 }
+                .padding(.bottom, player.currentEpisode != nil ? 80 : 20)
             }
-            .padding(.bottom, player.currentEpisode != nil ? 80 : 20)
-        }
-        .background(Color(.systemGroupedBackground))
-        .refreshable {
-            await podcastParser.fetchAllPodcastsAsync()
-        }
-        .onAppear {
-            if podcastParser.episodes.isEmpty {
-                podcastParser.fetchAllPodcasts()
+            .background(Color(.systemGroupedBackground))
+            .refreshable {
+                await podcastParser.fetchAllPodcastsAsync()
+            }
+            .onAppear {
+                if podcastParser.episodes.isEmpty {
+                    podcastParser.fetchAllPodcasts()
+                }
+            }
+            .toolbar(.hidden, for: .navigationBar)
+            .navigationDestination(for: PodcastShow.self) { show in
+                ShowDetailView(show: show)
             }
         }
+    }
+
+    // MARK: - Derived Data
+
+    private var shows: [PodcastShow] {
+        let nonSnippets = podcastParser.episodes.filter { $0.episodeType != .snippet }
+        let grouped = Dictionary(grouping: nonSnippets) { $0.source }
+        return grouped.map { name, eps in
+            let sorted = eps.sorted { $0.pubDate > $1.pubDate }
+            return PodcastShow(
+                name: name,
+                artworkURL: sorted.first?.artworkURL,
+                episodes: sorted
+            )
+        }
+        .sorted { ($0.episodes.first?.pubDate ?? .distantPast) > ($1.episodes.first?.pubDate ?? .distantPast) }
+    }
+
+    private var latestEpisodes: [PodcastEpisode] {
+        Array(
+            podcastParser.episodes
+                .filter { $0.episodeType != .snippet }
+                .sorted { $0.pubDate > $1.pubDate }
+                .prefix(30)
+        )
     }
 
     private var listenHeader: some View {
@@ -111,24 +132,55 @@ struct ListenTab: View {
         }
     }
 
-    // MARK: - Episode Section (Vertical List)
+    // MARK: - Shows Section (Horizontal Scroll)
 
-    private func episodeSection(title: String, subtitle: String, icon: String, episodes: [PodcastEpisode]) -> some View {
+    private var showsSection: some View {
         VStack(alignment: .leading, spacing: 12) {
             VStack(alignment: .leading, spacing: 2) {
                 HStack {
-                    Image(systemName: icon)
+                    Image(systemName: "rectangle.stack.fill")
                         .foregroundColor(.arcaOrange)
-                    Text(title)
+                    Text("Shows")
                         .font(.title3.weight(.bold))
                 }
-                Text(subtitle)
+                Text("Browse your podcasts")
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
             .padding(.horizontal)
 
-            ForEach(episodes.prefix(15)) { episode in
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 12) {
+                    ForEach(shows) { show in
+                        NavigationLink(value: show) {
+                            ShowCard(show: show)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal)
+            }
+        }
+    }
+
+    // MARK: - Latest Episodes Section (Vertical List)
+
+    private var latestEpisodesSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+                HStack {
+                    Image(systemName: "clock.fill")
+                        .foregroundColor(.arcaOrange)
+                    Text("Latest Episodes")
+                        .font(.title3.weight(.bold))
+                }
+                Text("Newest from all your shows")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+            .padding(.horizontal)
+
+            ForEach(latestEpisodes) { episode in
                 EpisodeRow(episode: episode) {
                     player.play(episode)
                 }
@@ -529,5 +581,135 @@ struct MiniPlayerBar: View {
             .padding(.horizontal, 8)
             .transition(.move(edge: .bottom).combined(with: .opacity))
         }
+    }
+}
+
+// MARK: - Show Model
+
+struct PodcastShow: Identifiable, Hashable {
+    var id: String { name }
+    let name: String
+    let artworkURL: URL?
+    let episodes: [PodcastEpisode]
+
+    static func == (lhs: PodcastShow, rhs: PodcastShow) -> Bool {
+        lhs.name == rhs.name
+    }
+
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(name)
+    }
+}
+
+// MARK: - Show Card (Horizontal)
+
+struct ShowCard: View {
+    let show: PodcastShow
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            ZStack {
+                if let artworkURL = show.artworkURL {
+                    CachedAsyncImage(url: artworkURL)
+                        .scaledToFill()
+                        .frame(width: 120, height: 120)
+                        .clipped()
+                } else {
+                    RoundedRectangle(cornerRadius: 12)
+                        .fill(Color.arcaOrange.opacity(0.15))
+                        .frame(width: 120, height: 120)
+                        .overlay(
+                            Image(systemName: "waveform")
+                                .font(.title)
+                                .foregroundColor(.arcaOrange)
+                        )
+                }
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+            .shadow(color: .black.opacity(0.08), radius: 4, y: 2)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(show.name)
+                    .font(.caption.weight(.semibold))
+                    .foregroundColor(.primary)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.leading)
+                Text("\(show.episodes.count) episode\(show.episodes.count == 1 ? "" : "s")")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+            }
+        }
+        .frame(width: 120)
+    }
+}
+
+// MARK: - Show Detail View
+
+struct ShowDetailView: View {
+    let show: PodcastShow
+    @ObservedObject private var player = AudioPlayerManager.shared
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                // Show header — large artwork + title + episode count
+                HStack(alignment: .top, spacing: 16) {
+                    if let artworkURL = show.artworkURL {
+                        CachedAsyncImage(url: artworkURL)
+                            .scaledToFill()
+                            .frame(width: 110, height: 110)
+                            .clipped()
+                            .clipShape(RoundedRectangle(cornerRadius: 14))
+                            .shadow(color: .black.opacity(0.15), radius: 8, y: 4)
+                    } else {
+                        RoundedRectangle(cornerRadius: 14)
+                            .fill(Color.arcaOrange.opacity(0.15))
+                            .frame(width: 110, height: 110)
+                            .overlay(
+                                Image(systemName: "waveform")
+                                    .font(.system(size: 36))
+                                    .foregroundColor(.arcaOrange)
+                            )
+                    }
+
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(show.name)
+                            .font(.title3.weight(.bold))
+                            .lineLimit(3)
+                        Text("\(show.episodes.count) episode\(show.episodes.count == 1 ? "" : "s")")
+                            .font(.subheadline)
+                            .foregroundColor(.secondary)
+                        Spacer(minLength: 0)
+                    }
+
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal)
+                .padding(.top, 8)
+
+                // Episodes section header
+                HStack {
+                    Image(systemName: "list.bullet")
+                        .foregroundColor(.arcaOrange)
+                    Text("Episodes")
+                        .font(.headline)
+                    Spacer()
+                }
+                .padding(.horizontal)
+
+                LazyVStack(spacing: 12) {
+                    ForEach(show.episodes) { episode in
+                        EpisodeRow(episode: episode) {
+                            player.play(episode)
+                        }
+                        .padding(.horizontal)
+                    }
+                }
+            }
+            .padding(.bottom, player.currentEpisode != nil ? 80 : 20)
+        }
+        .background(Color(.systemGroupedBackground))
+        .navigationTitle(show.name)
+        .navigationBarTitleDisplayMode(.inline)
     }
 }
