@@ -45,6 +45,13 @@ struct ContentView: View {
                                     Text("Saved")
                                 }
                                 .tag(2)
+
+                            SearchTab(parser: parser)
+                                .tabItem {
+                                    Image(systemName: "magnifyingglass")
+                                    Text("Search")
+                                }
+                                .tag(3)
                         }
                         .tint(.arcaOrange)
 
@@ -94,7 +101,6 @@ struct ContentView: View {
 struct FeedTab: View {
     @ObservedObject var parser: FeedParser
     @State private var selectedCategory = "Top Picks"
-    @State private var searchText = ""
 
     @State private var selectedItem: FeedItem?
 
@@ -221,21 +227,11 @@ struct FeedTab: View {
     // MARK: - Feed Content
 
     private var filteredItems: [FeedItem] {
-        var items: [FeedItem]
         if selectedCategory == "Top Picks" {
-            items = parser.items.filter { !$0.isShort }
+            return parser.items.filter { !$0.isShort }
         } else {
-            items = parser.items.filter { $0.category == selectedCategory }
+            return parser.items.filter { $0.category == selectedCategory }
         }
-        if !searchText.isEmpty {
-            let query = searchText.lowercased()
-            items = items.filter {
-                $0.title.lowercased().contains(query) ||
-                $0.source.lowercased().contains(query) ||
-                $0.itemDescription.lowercased().contains(query)
-            }
-        }
-        return items
     }
 
     // qualityItems is now computed inline in feedContent to avoid redundant recomputation
@@ -264,100 +260,53 @@ struct FeedTab: View {
                         .transition(.opacity)
                 }
 
-                // Search bar
-                HStack(spacing: 10) {
-                    Image(systemName: "magnifyingglass")
-                        .foregroundColor(.secondary)
-                    TextField("Search stories...", text: $searchText)
-                        .font(.subheadline)
-                        .autocorrectionDisabled()
-                    if !searchText.isEmpty {
-                        Button { searchText = "" } label: {
-                            Image(systemName: "xmark.circle.fill")
-                                .foregroundColor(.secondary)
-                        }
-                    }
-                }
-                .padding(10)
-                .background(Color(.tertiarySystemGroupedBackground))
-                .clipShape(RoundedRectangle(cornerRadius: 12))
-                .padding(.horizontal)
-                .padding(.top, 8)
-
                 categoryBar
-                    .padding(.top, 4)
+                    .padding(.top, 12)
 
-                if !searchText.isEmpty {
-                    // ── Search Results ──
-                    let searchResults = filtered.prefix(20)
-                    if searchResults.isEmpty {
-                        VStack(spacing: 12) {
-                            Image(systemName: "magnifyingglass")
-                                .font(.title)
-                                .foregroundColor(.secondary)
-                            Text("No results for \"\(searchText)\"")
-                                .font(.subheadline)
-                                .foregroundColor(.secondary)
-                        }
-                        .frame(maxWidth: .infinity)
-                        .padding(.top, 40)
-                    } else {
-                        VStack(spacing: 12) {
-                            ForEach(Array(searchResults)) { item in
-                                StoryCardView(item: item, onTap: {
-                                    tapAction(item)
-                                }, onDeepDive: nil)
-                            }
-                        }
+                // ── Smart Briefing ──
+                if briefingShown {
+                    BriefingCardView(items: briefingItems, subtitle: currentMood.briefingSubtitle, onTap: { item in
+                        tapAction(item)
+                    })
                         .padding(.horizontal)
-                        .padding(.top, 12)
-                    }
-                } else {
-                    // ── Smart Briefing ──
-                    if briefingShown {
-                        BriefingCardView(items: briefingItems, subtitle: currentMood.briefingSubtitle, onTap: { item in
-                            tapAction(item)
-                        })
-                            .padding(.horizontal)
-                            .padding(.top, 16)
-                    }
+                        .padding(.top, 16)
+                }
 
-                    // ── Tier 1: Top 3 big stories ──
-                    if !top.isEmpty {
-                        feedSection(title: currentMood.sectionTitle) {
-                            VStack(spacing: 16) {
-                                ForEach(top) { item in
-                                    VStack(spacing: 0) {
-                                        StoryCardView(item: item, onTap: {
-                                            tapAction(item)
-                                        }, onDeepDive: item.relatedArticles.isEmpty ? nil : {
-                                            activeSheet = .deepDive(item)
-                                        })
+                // ── Tier 1: Top 3 big stories ──
+                if !top.isEmpty {
+                    feedSection(title: currentMood.sectionTitle) {
+                        VStack(spacing: 16) {
+                            ForEach(top) { item in
+                                VStack(spacing: 0) {
+                                    StoryCardView(item: item, onTap: {
+                                        tapAction(item)
+                                    }, onDeepDive: item.relatedArticles.isEmpty ? nil : {
+                                        activeSheet = .deepDive(item)
+                                    })
 
-                                        if !item.relatedArticles.isEmpty {
-                                            MoreCoverageView(
-                                                articles: item.relatedArticles,
-                                                onTap: { related in
-                                                    tapAction(related)
-                                                },
-                                                onDeepDive: {
-                                                    activeSheet = .deepDive(item)
-                                                }
-                                            )
-                                        }
+                                    if !item.relatedArticles.isEmpty {
+                                        MoreCoverageView(
+                                            articles: item.relatedArticles,
+                                            onTap: { related in
+                                                tapAction(related)
+                                            },
+                                            onDeepDive: {
+                                                activeSheet = .deepDive(item)
+                                            }
+                                        )
                                     }
                                 }
                             }
-                            .padding(.horizontal)
                         }
-                        .padding(.top, 16)
+                        .padding(.horizontal)
                     }
+                    .padding(.top, 16)
+                }
 
-                    // ── Tier 2: Mixed layout ──
-                    if !remaining.isEmpty {
-                        mixedLayoutSection(items: remaining)
-                            .padding(.top, 24)
-                    }
+                // ── Tier 2: Mixed layout ──
+                if !remaining.isEmpty {
+                    mixedLayoutSection(items: remaining)
+                        .padding(.top, 24)
                 }
             }
             .padding(.bottom, AudioPlayerManager.shared.currentEpisode != nil ? 80 : 20)
@@ -1372,6 +1321,120 @@ struct WideRowView: View {
         .padding(14)
         .background(Color(.secondarySystemGroupedBackground))
         .clipShape(RoundedRectangle(cornerRadius: 14))
+    }
+}
+
+// MARK: - Search Tab
+
+private struct SearchTab: View {
+    @ObservedObject var parser: FeedParser
+    @State private var searchText = ""
+    @State private var selectedItem: FeedItem?
+
+    private var results: [FeedItem] {
+        guard !searchText.isEmpty else { return [] }
+        let query = searchText.lowercased()
+        return Array(
+            parser.items
+                .filter {
+                    $0.title.lowercased().contains(query) ||
+                    $0.source.lowercased().contains(query) ||
+                    $0.itemDescription.lowercased().contains(query)
+                }
+                .prefix(50)
+        )
+    }
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                if searchText.isEmpty {
+                    emptyPrompt
+                } else if results.isEmpty {
+                    noResults
+                } else {
+                    resultsList
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Color(.systemGroupedBackground))
+            .navigationTitle("Search")
+            .navigationBarTitleDisplayMode(.inline)
+            .searchable(
+                text: $searchText,
+                placement: .navigationBarDrawer(displayMode: .always),
+                prompt: "Search every story across all sources"
+            )
+            .autocorrectionDisabled()
+        }
+        .fullScreenCover(item: $selectedItem) { item in
+            NativeReaderView(item: item)
+        }
+    }
+
+    // MARK: - States
+
+    private var emptyPrompt: some View {
+        VStack(spacing: 16) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 56))
+                .foregroundColor(.arcaOrange.opacity(0.6))
+            Text("Search Arca")
+                .font(.title2.weight(.bold))
+            Text("Find stories across every source — title, publisher, or description.")
+                .font(.subheadline)
+                .foregroundColor(.secondary)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 40)
+        }
+        .padding(.top, 80)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    }
+
+    private var noResults: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 40))
+                .foregroundColor(.secondary)
+            Text("No results for \"\(searchText)\"")
+                .font(.subheadline)
+                .foregroundColor(.secondary)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 32)
+        }
+        .padding(.top, 80)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    }
+
+    private var resultsList: some View {
+        ScrollView {
+            VStack(spacing: 12) {
+                HStack {
+                    Text("\(results.count) result\(results.count == 1 ? "" : "s")")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    Spacer()
+                }
+                .padding(.top, 8)
+
+                ForEach(results) { item in
+                    StoryCardView(item: item, onTap: {
+                        tapAction(item)
+                    }, onDeepDive: nil)
+                }
+            }
+            .padding(.horizontal)
+            .padding(.bottom, AudioPlayerManager.shared.currentEpisode != nil ? 80 : 20)
+        }
+    }
+
+    private func tapAction(_ item: FeedItem) {
+        PreferenceEngine.shared.recordTap(on: item)
+        if !ReadStateManager.shared.isRead(item) {
+            ReadingStreakManager.shared.recordRead()
+            ReadStateManager.shared.markRead(item)
+        }
+        selectedItem = item
     }
 }
 
