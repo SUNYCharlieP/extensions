@@ -152,7 +152,7 @@ struct FeedTab: View {
             case .settings:
                 SettingsView()
             case .digest:
-                WeeklyDigestView(items: parser.items)
+                WeeklyDigestView(items: parser.items.filter { !$0.isSubscriberOnly })
             }
         }
     }
@@ -227,10 +227,11 @@ struct FeedTab: View {
     // MARK: - Feed Content
 
     private var filteredItems: [FeedItem] {
+        let visible = parser.items.filter { !$0.isSubscriberOnly }
         if selectedCategory == "Top Picks" {
-            return parser.items.filter { !$0.isShort }
+            return visible.filter { !$0.isShort }
         } else {
-            return parser.items.filter { $0.category == selectedCategory }
+            return visible.filter { $0.category == selectedCategory }
         }
     }
 
@@ -492,7 +493,7 @@ struct BookmarksTab: View {
     @State private var selectedItem: FeedItem?
 
     private var savedItems: [FeedItem] {
-        bookmarks.allBookmarkedItems(liveItems: parser.items)
+        bookmarks.allBookmarkedItems(liveItems: parser.items.filter { !$0.isSubscriberOnly })
     }
 
     var body: some View {
@@ -983,10 +984,12 @@ struct StoryCardView: View {
     @ObservedObject private var bookmarks = BookmarkManager.shared
     @ObservedObject private var readState = ReadStateManager.shared
     @ObservedObject private var preferences = PreferenceEngine.shared
-    /// Reads liked state — triggers re-render via preferences.likedVersion
     private var isLiked: Bool { preferences.isLiked(item) }
-    /// Local animation trigger for the heart scale effect
-    @State private var heartBounce = false
+    private var isDisliked: Bool { preferences.isDisliked(item) }
+    @State private var likeBounce = false
+    @State private var dislikeBounce = false
+    @State private var likeScale: CGFloat = 1.0
+    @State private var dislikeScale: CGFloat = 1.0
 
     private var isBookmarked: Bool { bookmarks.isBookmarked(item) }
     private var isRead: Bool { readState.isRead(item) }
@@ -1060,25 +1063,52 @@ struct StoryCardView: View {
                     // Action buttons
                     HStack(spacing: 14) {
                         Button {
-                            let impact = UIImpactFeedbackGenerator(style: .light)
-                            impact.impactOccurred()
+                            DispatchQueue.main.async {
+                                let impact = UIImpactFeedbackGenerator(style: .medium)
+                                impact.prepare()
+                                impact.impactOccurred(intensity: 0.8)
+                            }
                             if isLiked {
                                 PreferenceEngine.shared.removeLike(on: item)
                             } else {
                                 PreferenceEngine.shared.recordLike(on: item)
                             }
-                            withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) {
-                                heartBounce.toggle()
+                            likeBounce.toggle()
+                            likeScale = 1.3
+                            withAnimation(.spring(response: 0.3, dampingFraction: 0.5)) {
+                                likeScale = 1.0
                             }
                         } label: {
-                            Image(systemName: isLiked ? "heart.fill" : "heart")
-                                .foregroundColor(isLiked ? .arcaRed : .secondary.opacity(0.4))
-                                .scaleEffect(isLiked ? 1.15 : 1.0)
+                            Image(systemName: isLiked ? "hand.thumbsup.fill" : "hand.thumbsup")
+                                .foregroundColor(isLiked ? .arcaOrange : .secondary.opacity(0.4))
+                                .scaleEffect(likeScale)
                         }
                         .buttonStyle(.plain)
-                        // heartBounce forces SwiftUI to re-evaluate this view
-                        // (isLiked reads from non-observable PreferenceEngine)
-                        .id(heartBounce)
+                        .id(likeBounce)
+
+                        Button {
+                            DispatchQueue.main.async {
+                                let impact = UIImpactFeedbackGenerator(style: .light)
+                                impact.prepare()
+                                impact.impactOccurred(intensity: 0.6)
+                            }
+                            if isDisliked {
+                                PreferenceEngine.shared.removeDislike(on: item)
+                            } else {
+                                PreferenceEngine.shared.recordDislike(on: item)
+                            }
+                            dislikeBounce.toggle()
+                            dislikeScale = 1.3
+                            withAnimation(.spring(response: 0.3, dampingFraction: 0.5)) {
+                                dislikeScale = 1.0
+                            }
+                        } label: {
+                            Image(systemName: isDisliked ? "hand.thumbsdown.fill" : "hand.thumbsdown")
+                                .foregroundColor(isDisliked ? .arcaRed : .secondary.opacity(0.4))
+                                .scaleEffect(dislikeScale)
+                        }
+                        .buttonStyle(.plain)
+                        .id(dislikeBounce)
 
                         Button {
                             let impact = UIImpactFeedbackGenerator(style: .medium)
@@ -1335,7 +1365,7 @@ private struct SearchTab: View {
         guard !searchText.isEmpty else { return [] }
         let query = searchText.lowercased()
         return Array(
-            parser.items
+            parser.items.filter { !$0.isSubscriberOnly }
                 .filter {
                     $0.title.lowercased().contains(query) ||
                     $0.source.lowercased().contains(query) ||

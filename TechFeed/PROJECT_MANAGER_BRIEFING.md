@@ -1,26 +1,41 @@
 # ARCA — Project Manager Briefing
 
-**Date:** April 8, 2026
+**Date:** April 10, 2026
 **App Name:** Arca (bundle: TechFeed)
 **Platform:** iOS (SwiftUI, pure Apple frameworks, zero third-party dependencies)
 **Location:** `/Users/charlie/extensions/TechFeed/`
 
 ---
 
-## WHAT ARCA IS
+## CURRENT STATE
 
-Arca is an iOS RSS tech news reader with podcast audio. It aggregates 25 RSS feeds across 6 categories (Apple, General Tech, Reviews, Hacker News, Security, Science) and 8 podcast feeds. It features a smart briefing system, article deduplication across sources, preference learning, native article rendering, bookmark sync, reading streaks, and a full podcast player with playback speed control.
+- **TestFlight:** Build 1.0 (1) live
+- **Bundle ID:** `com.charlespiazza.arca`
+- **Domain:** `arcanews.app` (owned)
+- **Privacy policy:** https://arcanews.app/privacy
+- **Support email:** support@arcanews.app
+- **Signing:** Apple Development — Charles Piazza (346D5268JL)
+- **Deployment target:** iOS 16.0
+- **Release build:** clean, zero errors, zero warnings, validated for store submission
 
 ---
 
-## CODEBASE OVERVIEW (24 Swift files, ~6,500 lines)
+## WHAT ARCA IS
+
+Arca is an iOS RSS tech news reader with podcast audio and full-text article extraction. It aggregates 25 RSS feeds across 6 categories (Apple, General Tech, Reviews, Hacker News, Security, Science) and 13 podcast feeds. It features a smart briefing system, article deduplication across sources, preference learning, native article rendering, a Safari Reader–style extraction pipeline for paywalled sites, bookmark sync, reading streaks, a full podcast player with playback speed control, a global Search tab, and Sign in with Apple.
+
+The app has four tabs: **Feed** (categorized briefing + tiered stories), **Listen** (podcast shows + episodes), **Saved** (bookmarks), and **Search** (cross-source full-text search).
+
+---
+
+## CODEBASE OVERVIEW (25 Swift files, ~7,400 lines)
 
 ### Core Architecture
 
 | File | Purpose |
 |------|---------|
 | `TechFeedApp.swift` | App entry point; precompiles ad-blocking content rules |
-| `ContentView.swift` | Root view — Feed tab, Bookmarks tab, tab bar, onboarding gate, all card views (StoryCardView, MediumCardView, WideRowView, BriefingCardView, SavedArticleRow) |
+| `ContentView.swift` | Root view — 4-tab TabView (Feed / Listen / Saved / Search), onboarding gate, `FeedTab`, `BookmarksTab`, `SearchTab` (private struct), all card views (StoryCardView, MediumCardView, WideRowView, BriefingCardView, SavedArticleRow) |
 | `Models.swift` | `FeedItem` struct (the article model), `RSSFeed` definitions (all 25 feeds), `Date.relativeString` |
 | `FeedParser.swift` | RSS XML parsing, deduplication (Jaccard similarity + URL dedup), preference scoring, keyword categorization, feed diversity algorithm, Open Graph image extraction, `strippingHTMLTags()` extension |
 
@@ -28,16 +43,17 @@ Arca is an iOS RSS tech news reader with podcast audio. It aggregates 25 RSS fee
 
 | File | Purpose |
 |------|---------|
-| `NativeReaderView.swift` | Native SwiftUI article renderer — decides whether to render from RSS content or fall back to web view. Contains `HTMLContentParser` (parses HTML into ContentBlock array), `ContentBlock` enum (.text, .heading, .image, .blockquote), paywall host lists, `hasRichContent` gate |
-| `ArticleReaderView.swift` | WKWebView-based reader fallback — loads article URL directly. Has precompiled `WKContentRuleList` for ad/tracker blocking, injected CSS for dark mode + paywall overlay removal, injected JS for post-load paywall killing. Uses Googlebot UA for soft-paywalled sites |
+| `NativeReaderView.swift` | Native SwiftUI article renderer — decision tree: rich RSS → native; thin RSS → ArticleExtractor fetch → native from extracted HTML; extraction fails → web view. Contains `HTMLContentParser` (parses HTML into ContentBlock array), `ContentBlock` enum (.text, .heading, .image, .blockquote), `hasRichContent` gate, extraction loading state |
+| `ArticleExtractor.swift` | Safari Reader–style article extraction pipeline. Fetches raw HTML with mobile Safari UA, pre-cleans (scripts/styles/paywall classes), scores candidate containers by paragraph density + semantic class bonuses, strips navigation/ads/boilerplate, runs plain-text post-processing filter (dedup lines, drop author bios / "Most Popular" / recirc headings), wraps surviving lines in `<p>` tags. Returns clean HTML to `HTMLContentParser`. |
+| `ArticleReaderView.swift` | WKWebView-based reader fallback — loads article URL directly when extraction fails. Precompiled `WKContentRuleList` (ReaderRulesV10) for ad/tracker blocking, Reuters consent-modal bypass, injected CSS for dark mode + paywall overlay removal, JS `removeModals()` + MutationObserver for post-load paywall elements (Verge duet–cta widgets), Googlebot UA for soft-paywalled sites |
 
 ### Podcast / Audio
 
 | File | Purpose |
 |------|---------|
-| `ListenTab.swift` | Full podcast UI — snippet cards, episode rows, full player view, mini player bar |
-| `PodcastParser.swift` | Podcast RSS parsing, segments episodes by type (snippet/briefing/full) |
-| `PodcastModels.swift` | `PodcastEpisode` struct, `PodcastFeed` definitions (8 feeds) |
+| `ListenTab.swift` | Full podcast UI wrapped in NavigationStack. `ListenTab` (root) → `quickListenSection` (snippets) → `showsSection` (horizontal ShowCard row) → `latestEpisodesSection` (top 30 newest from all shows). `ShowCard` / `PodcastShow` model / `ShowDetailView` (per-show episode list pushed via NavigationLink). Also defines `SnippetCard`, `EpisodeRow`, `FullPlayerView`, `MiniPlayerBar`. |
+| `PodcastParser.swift` | Podcast RSS parsing, per-feed fetch cap (10 for snippets, 50 for full/briefing), global 600 cap, segments episodes by type (snippet/briefing/full) |
+| `PodcastModels.swift` | `PodcastEpisode` struct, `PodcastFeed` definitions (13 feeds: NPR News Now; Techmeme Ride Home, WSJ Tech News Briefing; The Vergecast, Waveform, Hard Fork, Decoder, ATP, Lex Fridman, This Week in Tech, Darknet Diaries, Acquired, Tim Ferriss) |
 | `AudioPlayerManager.swift` | AVPlayer wrapper — singleton, playback rate control, Now Playing info, remote commands (lock screen/AirPods), background audio |
 
 ### State Management (all singletons, all ObservableObject)
@@ -60,7 +76,7 @@ Arca is an iOS RSS tech news reader with podcast audio. It aggregates 25 RSS fee
 | `CachedImageView.swift` | `CachedAsyncImage` — in-memory image cache (100 items, 40MB cap), URL-based dedup, downsampling to 800px |
 | `LaunchScreenView.swift` | Animated Arca arch logo launch screen |
 | `OnboardingView.swift` | 3-page onboarding (welcome → category picker → ready) |
-| `SettingsView.swift` | Source management, custom RSS feed adding (with category picker), Google sign-in |
+| `SettingsView.swift` | Source management, custom RSS feed adding (with category picker), Sign in with Apple button + signed-in state |
 | `WeeklyDigestView.swift` | Feed statistics dashboard ("Feed Digest") |
 | `DeepDiveView.swift` | Multi-source story comparison — shows how different outlets covered the same story |
 
@@ -92,59 +108,65 @@ These features are stable and should not be touched:
 
 ---
 
-## THE CRITICAL UNSOLVED PROBLEM
+## MAJOR FEATURES COMPLETED (post-briefing)
 
-### Paywalled articles with thin RSS content
+Everything in this section was open work at the time of the original briefing and is now shipped and live on TestFlight build 1.0 (1).
 
-**The issue:** Sites like Wired, Bloomberg, NYT, WSJ, Fortune give only ~15-50 word RSS excerpts. When a user taps one of these articles, they currently see either:
+### ✅ Article Extraction Pipeline (the "critical unsolved problem")
 
-- **A useless 1-paragraph native excerpt** with a "Continue reading" link that goes to a paywall (the current state for "nativeOnlyHosts" like Wired)
-- **A broken paywall page** in the web view (what happens when we try to load the actual URL)
+**Status:** Shipped. `ArticleExtractor.swift` implemented per the approved plan.
 
-**This is the #1 user complaint and the reason we're here.**
+**What it does:** Safari Reader–style extraction. Fetches raw HTML with a mobile Safari UA, pre-cleans scripts/styles/paywall classes, scores candidate containers by paragraph density and semantic bonuses (article-body, post-content, entry-content, story-body, caas-body), strips navigation / ads / boilerplate, runs a plain-text post-processing pass that drops duplicate lines, author bios, "Most Popular" / "Follow topics" widgets, and recirculation headings. Surviving paragraphs are wrapped in `<p>` tags and fed to the existing `HTMLContentParser`.
 
-### What we tried and why it failed
-
-#### Attempt 1: Googlebot User-Agent in WKWebView
-**Idea:** Send `User-Agent: Googlebot/2.1` when loading paywalled sites in the web view. Sites serve full content to Google's crawler.
-**Result:** Works for some sites (The Verge, Ars Technica, Fortune). **Fails for Wired, NYT, WSJ, Bloomberg** — they verify that requests claiming to be Googlebot actually come from Google's IP ranges. Our request gets detected as fake and hits the paywall anyway.
-**Current state:** Googlebot UA is still used for the 3 "soft-paywalled" sites where it works (theverge.com, fortune.com, arstechnica.com). Removed from the 6 "hard-paywalled" sites.
-
-#### Attempt 2: Low word-count threshold for native RSS rendering
-**Idea:** For hard-paywalled sites, show even a 15-word RSS excerpt natively — at least it's clean and not a broken paywall page.
-**Result:** Technically works but the user experience is terrible. A single paragraph with a hero image and a "Continue reading on Wired" link is not acceptable. The user's exact feedback: *"who's gonna read that and think well i really enjoy this app!!"*
-**Current state:** This is what the app does right now for Wired. It's a band-aid, not a solution.
-
-#### Attempt 3: CSS/JS paywall stripping in WKWebView
-**Idea:** Inject CSS to hide paywall overlays (`[class*="paywall"]`, `[class*="piano"]`, etc.) and JS to remove `overflow:hidden`, expand truncated containers, kill gradient fades.
-**Result:** Partially works for soft paywalls but hard-paywalled sites fight back. Their JavaScript detects the environment, re-injects overlays, truncates content server-side, or redirects entirely. The CSS/JS battle is unwinnable because their code runs in the same web view.
-**Current state:** Still active in ArticleReaderView.swift as a last-resort fallback. Works okay for non-paywalled sites with cookie/consent banners.
-
-### The approved plan (not yet implemented)
-
-**Article Extraction Pipeline** — A fundamentally different approach. See `ARTICLE_EXTRACTION_PLAN.md` in the project root.
-
-**How it works:**
-1. Fetch the raw HTML from the article URL using `URLSession` (normal Safari UA, not Googlebot)
-2. Extract the article body content from the HTML using a Readability-like algorithm (score elements by paragraph density, semantic tags, text-to-markup ratio)
-3. Strip paywall artifacts from the extracted HTML (overlays, modals, hidden styles)
-4. Render the cleaned content natively in SwiftUI through the existing `HTMLContentParser`
-
-**Why it should work:** Most paywalled sites include the full article text in their initial HTML response for SEO (Google indexes the HTML). The paywall is enforced by JavaScript that runs after page load — adds overlays, hides content, truncates. Since our extraction parses raw HTML without executing JavaScript, the paywall code never runs. This is how Safari Reader Mode, Readability, Pocket, Instapaper, Reeder, and Feedly do it.
-
-**Files to create/modify:**
-- `ArticleExtractor.swift` — **NEW** — fetch + extraction logic
-- `NativeReaderView.swift` — **MODIFY** — integrate extraction, add loading state while fetching
-- `project.pbxproj` — **MODIFY** — add new file to Xcode build
-
-**Fallback chain after implementation:**
+**Fallback chain (live):**
 ```
-1. RSS has 150+ words of clean content? → Native reader from RSS (no fetch needed)
-2. Fetch + extract article from URL → Native reader from extracted content
-3. Extraction fails? → Web view fallback (ArticleReaderView)
+1. RSS has 150+ words of clean content → Native reader from RSS
+2. Fetch + extract article from URL    → Native reader from extracted HTML
+3. Extraction fails                     → Web view fallback (ArticleReaderView)
 ```
 
-**Status:** Plan written and reviewed. Not yet implemented. Waiting for approval to proceed.
+**Verified working:** Wired, Ars Technica, Fortune, The Verge, and every other soft- and hard-paywalled site that was previously broken. The extraction runs before any JavaScript executes, so paywall overlays never activate.
+
+### ✅ Sign in with Apple (replaced Google Sign-In)
+
+**Status:** Shipped. `GoogleSignInManager.swift` deleted entirely. `AppleSignInManager.swift` complete.
+
+**What it does:** Native `AuthenticationServices` framework flow — `ASAuthorizationAppleIDProvider` + `ASAuthorizationController`. Stores the Apple user identifier in `UserDefaults`, caches name + email from the first-sign-in credential. On launch, `checkCredentialState()` validates against Apple's servers and signs the user out if revoked. Settings screen uses the native `SignInWithAppleButton` with `.whiteOutline` style. Zero backend, zero third-party dependencies. iCloud sync methods (bookmarks, streak) gated on sign-in state via `NSUbiquitousKeyValueStore`, same contract as before.
+
+### ✅ Search Tab (fourth tab)
+
+**Status:** Shipped. `SearchTab` (private struct in `ContentView.swift`) added as tag 3 in the `TabView`.
+
+**What it does:** Uses the native `.searchable()` modifier with `.navigationBarDrawer(displayMode: .always)`. Searches across **all** `parser.items` (no category scoping, unlike the removed inline FeedTab search bar). Case-insensitive substring match on title, source, and itemDescription. Caps results at 50, renders as `StoryCardView`s. Three states: empty prompt ("Search Arca — find stories across every source"), results list with count header, and no-results empty view. The old inline search bar inside `FeedTab` is gone — the Feed tab always shows the briefing/tier layout now.
+
+### ✅ Listen Tab reorganization (show cards + 13 podcasts)
+
+**Status:** Shipped.
+
+**What changed:**
+- `ListenTab` now wrapped in `NavigationStack` with `.navigationDestination(for: PodcastShow.self)`
+- New `showsSection` — horizontal scroll of `ShowCard`s (120×120 artwork + show name + episode count), pushes `ShowDetailView` on tap
+- New `latestEpisodesSection` — vertical list of the top 30 newest non-snippet episodes across all shows (replaces the old separate "Daily Briefings" and "Full Episodes" sections)
+- New model: `PodcastShow` (Identifiable + Hashable), grouped from `parser.episodes` by source
+- New view: `ShowDetailView` — pushed via NavigationLink, shows 110×110 hero + full episode list per show
+- Podcast feed count expanded from 8 → **13**: added Lex Fridman Podcast, This Week in Tech, Darknet Diaries, Acquired, The Tim Ferriss Show
+- Per-feed fetch cap raised from implicit unlimited (with a global `.prefix(100)` choking everything) to explicit 50 per feed (10 for snippet feeds). Global cap raised to 600 to accommodate.
+
+### ✅ Waveform feed URL fix
+
+**Status:** Shipped. The original `https://feeds.megaphone.fm/waveform` URL returned zero items (feed relocated). Simplecast URL was also dead (404 `NoSuchKey`). Correct canonical feed `https://feeds.megaphone.fm/STU4418364045` obtained via iTunes lookup API (itunes ID 1474429475). Parses 347 items, keeps top 50.
+
+### ✅ Hacker News thumbnail fix
+
+**Status:** Shipped. `FeedParser.swift` — after the async Open Graph image fetch in `fetchMissingImages()`, `hasQualityImage` is now recomputed against the newly-set image URL. Previously, OG images fetched after initial parse were flagged as quality-good but the computed property was never re-evaluated, so HN thumbnails showed gray boxes even after the OG fetch completed. Also made `FeedItem.junkPatterns` non-private so FeedParser can access it.
+
+### ✅ Reuters consent modal bypass
+
+**Status:** Shipped. `ArticleReaderView.swift` — added a Reuters-specific `ignore-previous-rules` entry to the compiled `WKContentRuleList` with `if-domain: ["*reuters.com"]`. Previously the ad blocker content rules were suppressing the consent modal scripts in a way that left the modal DOM intact but non-dismissable, breaking navigation. Now Reuters bypasses content rules entirely and their consent flow runs normally. Cache identifier bumped to `ReaderRulesV10` so the rule list recompiles.
+
+### ✅ The Verge Zephr / duet-cta fix
+
+**Status:** Shipped. `ArticleReaderView.swift` — added `duet--commerce`, `subscription-offer`, `duet--cta` selectors to both the injected paywall CSS block and a new JS `removeModals()` function that runs at `.atDocumentEnd` plus a MutationObserver watching for post-load injections. Removes the Vox Media newsletter-widget / subscription-prompt blocks that The Verge inlines into article bodies. The initial Zephr-targeted work was abandoned after it triggered anti-tampering JS that froze the page — the current implementation sticks to the duet-* widgets and leaves the Zephr subscription block untouched (users hit the existing web view fallback for hard Zephr cases).
 
 ---
 
@@ -187,69 +209,66 @@ These features are stable and should not be touched:
 
 ---
 
-## CURRENT PAYWALL HANDLING STATE (as of now)
+## CURRENT ARTICLE HANDLING STATE (live fallback chain)
 
-### NativeReaderView.swift decision logic:
 ```
-hasRichContent checks item.contentHTML (from RSS):
-├── nativeOnlyHosts (wired, nyt, wsj, bloomberg, athletic, information):
-│   └── 15+ words → native reader (shows short excerpt)
-│       This is the band-aid. Works but terrible UX.
-│
-├── Everything else:
-│   └── 150+ words + no truncation → native reader
-│       └── <150 words → falls to ArticleReaderView (web view)
-│
-ArticleReaderView (web view fallback):
-├── isPaywalled (verge, fortune, arstechnica):
-│   └── Uses Googlebot UA → gets full article
-│
-└── Everything else:
-    └── Normal Safari UA → works for non-paywalled sites
+1. RSS has 150+ words of clean content → Native reader (from RSS)
+   ✅ The Verge, 9to5Mac, MacRumors, AppleInsider, TechCrunch, Krebs, Hacker News (links)
+
+2. Thin RSS → ArticleExtractor.extract(url)
+   Mobile Safari UA, raw HTML fetch before JS runs, container scoring,
+   paywall/junk filters, plain-text post-processing. Returns wrapped <p>
+   HTML to HTMLContentParser → native reader.
+   ✅ Wired, Ars Technica, Fortune, CNET, Tom's Hardware, plus every
+      previously-broken soft-paywalled site.
+
+3. Extraction fails (<100 words extracted) → ArticleReaderView (WKWebView)
+   Precompiled WKContentRuleList (ReaderRulesV10), Reuters bypass,
+   duet-cta MutationObserver, Googlebot UA for isPaywalled hosts.
 ```
 
-### What renders well RIGHT NOW:
-- ✅ The Verge — full content:encoded RSS, native reader
-- ✅ 9to5Mac, MacRumors, AppleInsider — full RSS, native reader
-- ✅ TechCrunch — full RSS, native reader
-- ✅ Krebs on Security — full RSS, native reader
-- ✅ Ars Technica — Googlebot web view works
-- ✅ Fortune — Googlebot web view works (lazy images fixed)
-- ✅ Engadget, The Register, 404 Media, ZDNET, Phoronix, TechSpot, TLDR, Reuters — non-paywalled, web view works
-- ✅ PCMag, CNET, Tom's Hardware — non-paywalled, web view works
-- ✅ Hacker News — external links, web view works
-- ✅ Android Authority, 9to5Google — non-paywalled, web view works
-
-### What renders POORLY right now:
-- ❌ **Wired** — 30-word native excerpt. Paywall blocks web view. Googlebot blocked.
-- ❌ **Bloomberg** — same situation as Wired
-- ❌ **NYT** — same situation
-- ❌ **WSJ** — same situation
-- ❌ **The Athletic** — same situation
-- ❌ **The Information** — same situation
-
-These 6 sites are the targets for the Article Extraction Pipeline.
+Hard-paywalled sites that still degrade to web view: NYT, WSJ, Bloomberg, The Athletic, The Information — their initial HTML ships only the lede, so there's nothing for extraction to grab. V2 will look at per-site strategies if users push.
 
 ---
 
-## REMAINING TASKS (priority order)
+## REMAINING TASKS
 
-### P0 — Critical (the reason users are unhappy)
-1. **Build the Article Extraction Pipeline** — Plan approved, not yet implemented. This solves the Wired/Bloomberg/NYT/WSJ problem. See `ARTICLE_EXTRACTION_PLAN.md`.
-
-### P1 — Important (should do soon)
-2. **Sign in with Apple** — AppleSignInManager is fully implemented. No backend needed. Credential state checked on launch. iCloud sync for bookmarks and reading streak works via NSUbiquitousKeyValueStore.
-3. **iCloud sync** — BookmarkManager has merge logic but cloud sync is placeholder. Need CloudKit or similar.
-
-### P2 — Nice to have
-4. **Offline reading** — OfflineCacheManager exists and caches HTML, but there's no UI to browse cached articles or indicator showing which articles are available offline.
-5. **Extraction result caching** — After building the extraction pipeline, cache extracted HTML in OfflineCacheManager so repeated opens don't re-fetch.
-6. **Reading time accuracy** — Currently estimated from RSS description word count. With extraction, can calculate from actual article length.
+### Open
+1. **iCloud sync** — `BookmarkManager` has merge logic and `AppleSignInManager` gates on sign-in, but the actual CloudKit (or richer `NSUbiquitousKeyValueStore`) sync path is still placeholder-level. Needs end-to-end wiring + conflict resolution.
+2. **Offline reading UI** — `OfflineCacheManager` caches HTML, but there's no surface to browse cached articles or indicator showing which are available offline.
+3. **Extraction result caching** — `ArticleExtractor` re-fetches on every open. Pipe results through `OfflineCacheManager` keyed by URL hash so reopened articles are instant.
+4. **Reading time accuracy** — Currently estimated from RSS description word count. Now that extraction gives us the real body, recompute from extracted word count.
 
 ### Not planned / explicitly deferred
-- YouTube/video content — removed by user request, not coming back for now
+- YouTube / video content — removed by user request, not coming back
 - Short-form content — removed by user request
 - Android as separate category — merged into General Tech by user request
+
+---
+
+## V2 ROADMAP
+
+Post-launch themes once TestFlight feedback comes in:
+
+### Smarter preference algorithm
+The current `PreferenceEngine` scores on taps + likes + source affinity + keyword match. V2 adds:
+- **Reading duration signals** — weight articles the user actually *read* (time spent in reader view, scroll depth) vs. articles they tapped and immediately dismissed
+- **Topic clustering** — move beyond single-keyword matches; cluster articles by topic embeddings so "Apple Silicon" and "M4 chip" reinforce the same preference
+- **Recency decay** — taste shifts; older preference weight should decay exponentially so the algorithm tracks current interests instead of frozen first-week signals
+- **Negative signals** — explicit "not interested" affordance + implicit dismiss tracking (tapped into card, bailed in <2s) that actively downweights sources/topics
+
+### Deeper podcast libraries
+Today there are 13 hand-curated feeds. V2 goals:
+- Full podcast search (iTunes Search API) to let users add any show by name
+- Subscribed-show UI, per-show unread badges, per-show "new episode" notifications
+- Smart podcast discovery based on listening history (same recency-decayed preference signal as articles)
+
+### More article sources
+Expand beyond the current 25 feeds:
+- International tech outlets (Rest of World, Nikkei Asia, Le Monde Tech)
+- Long-form / analysis (Stratechery public posts, Benedict Evans, Every, Platformer)
+- Developer sources (Lobsters, GitHub Trending, arXiv cs.AI/cs.CL daily)
+- User-contributable source directory (curated, not arbitrary RSS)
 
 ---
 
@@ -276,6 +295,7 @@ TechFeed/
 ├── Models.swift                   (FeedItem, RSSFeed, Date extension)
 ├── FeedParser.swift               (RSS parsing, dedup, scoring, categorization)
 ├── NativeReaderView.swift         (native article renderer + HTMLContentParser)
+├── ArticleExtractor.swift         (Safari Reader–style HTML extraction pipeline)
 ├── ArticleReaderView.swift        (WKWebView fallback reader)
 ├── ListenTab.swift                (podcast UI + mini player + full player)
 ├── PodcastParser.swift            (podcast RSS parsing)

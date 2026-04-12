@@ -13,9 +13,14 @@ struct NativeReaderView: View {
     @State private var isExtracting = false
     @State private var extractionFailed = false
 
+    /// RSS HTML with Zephr subscription widgets stripped.
+    private var cleanedHTML: String {
+        Self.stripZephrFromHTML(item.contentHTML)
+    }
+
     /// Whether we have enough rich content for native rendering.
     private var hasRichContent: Bool {
-        let stripped = item.contentHTML.strippingHTMLTags()
+        let stripped = cleanedHTML.strippingHTMLTags()
         let trimmed = stripped.trimmingCharacters(in: .whitespacesAndNewlines)
 
         // Strip boilerplate footer lines before counting real content
@@ -39,7 +44,6 @@ struct NativeReaderView: View {
         }
         let cleanText = cleanLines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
         let wordCount = cleanText.split(separator: " ").count
-
         // Need substantial content for a good native reading experience.
         // Thin RSS content triggers article extraction instead.
         guard wordCount >= 150 else { return false }
@@ -56,10 +60,31 @@ struct NativeReaderView: View {
         return true
     }
 
+    /// Strip Zephr subscription/paywall widgets from RSS HTML.
+    /// The Verge embeds these in content:encoded — they'd render as native text otherwise.
+    private static func stripZephrFromHTML(_ html: String) -> String {
+        var result = html
+        // Match <div>, <section>, or <aside> elements with id or class containing "zephr"
+        let tags = ["div", "section", "aside"]
+        for tag in tags {
+            if let regex = try? NSRegularExpression(
+                pattern: "<\(tag)[^>]*(?:id|class)\\s*=\\s*[\"'][^\"']*zephr[^\"']*[\"'][^>]*>[\\s\\S]{0,5000}?</\(tag)>",
+                options: .caseInsensitive
+            ) {
+                result = regex.stringByReplacingMatches(
+                    in: result,
+                    range: NSRange(result.startIndex..., in: result),
+                    withTemplate: ""
+                )
+            }
+        }
+        return result
+    }
+
     /// Parsed blocks — cached after first computation
     private var parsedBlocks: [ContentBlock] {
         if let cached = cachedBlocks { return cached }
-        return HTMLContentParser.parse(item.contentHTML, heroImageURL: item.imageURL)
+        return HTMLContentParser.parse(cleanedHTML, heroImageURL: item.imageURL)
     }
 
     var body: some View {
@@ -105,7 +130,7 @@ struct NativeReaderView: View {
                 cachedRichContent = hasRichContent
             }
             if cachedBlocks == nil {
-                cachedBlocks = HTMLContentParser.parse(item.contentHTML, heroImageURL: item.imageURL)
+                cachedBlocks = HTMLContentParser.parse(cleanedHTML, heroImageURL: item.imageURL)
             }
         }
         .task {

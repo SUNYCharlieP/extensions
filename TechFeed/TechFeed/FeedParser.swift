@@ -87,7 +87,8 @@ class FeedParser: ObservableObject {
             self.lock.lock()
             let snapshot = collectedItems
             self.lock.unlock()
-            let filtered = snapshot.filter { !Self.isPromo($0) }
+            var filtered = snapshot.filter { !Self.isPromo($0) }
+            Self.enrichVergeArticles(&filtered)
             let categorized = Self.categorize(filtered)
             let deduped = Self.deduplicate(categorized, preferences: self.preferences)
             let scored = self.preferences.scoreItems(deduped)
@@ -477,6 +478,99 @@ class FeedParser: ObservableObject {
         let desc = item.itemDescription.lowercased()
         return promoPatterns.contains { pattern in
             title.contains(pattern) || desc.contains(pattern)
+        }
+    }
+
+    // MARK: - Verge Article Enrichment
+
+    /// For Verge articles with thin RSS content, attempt extraction.
+    /// Successful extractions (200+ words) replace contentHTML.
+    /// Failed extractions mark the item as subscriber-only.
+    private static func enrichVergeArticles(_ items: inout [FeedItem]) {
+        // Identify thin Verge articles and snapshot their URLs for async work
+        var targets: [(index: Int, url: URL)] = []
+        for i in items.indices {
+            let source = items[i].source.lowercased()
+            let host = items[i].url.host?.lowercased() ?? ""
+            let isVerge = source.contains("the verge") || source.contains("theverge") || host.contains("theverge.com")
+            guard isVerge else { continue }
+            let wordCount = items[i].contentHTML.strippingHTMLTags()
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .split(separator: " ").count
+            NSLog("[EnrichVerge] Verge article: %@ source: %@ host: %@ words: %d", items[i].url.absoluteString, items[i].source, host, wordCount)
+            if wordCount < 300 {
+                targets.append((index: i, url: items[i].url))
+            }
+        }
+        NSLog("[EnrichVerge] Found %d thin Verge articles (checked %d total items)", targets.count, items.count)
+        guard !targets.isEmpty else { return }
+
+        // Bridge async extractions into synchronous GCD context.
+        // Cap at 3 concurrent extractions, 10s timeout each.
+        let semaphore = DispatchSemaphore(value: 0)
+        var results: [(index: Int, html: String?)] = []
+        let resultsLock = NSLock()
+
+        Task {
+            await withTaskGroup(of: (Int, String?).self) { group in
+                var queued = 0
+                for target in targets {
+                    if queued >= 3 {
+                        if let result = await group.next() {
+                            resultsLock.lock()
+                            results.append((index: result.0, html: result.1))
+                            resultsLock.unlock()
+                        }
+                    }
+                    let idx = target.index
+                    let url = target.url
+                    group.addTask {
+                        let extracted = await withTaskGroup(of: String?.self) { inner -> String? in
+                            inner.addTask {
+                                return await ArticleExtractor.extract(from: url)
+                            }
+                            inner.addTask {
+                                try? await Task.sleep(nanoseconds: 10_000_000_000)
+                                return nil
+                            }
+                            for await result in inner {
+                                if result != nil {
+                                    inner.cancelAll()
+                                    return result
+                                }
+                            }
+                            return nil
+                        }
+                        return (idx, extracted)
+                    }
+                    queued += 1
+                }
+                for await result in group {
+                    resultsLock.lock()
+                    results.append((index: result.0, html: result.1))
+                    resultsLock.unlock()
+                }
+            }
+            semaphore.signal()
+        }
+        semaphore.wait()
+
+        for result in results {
+            if let html = result.html {
+                let wordCount = html.strippingHTMLTags()
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                    .split(separator: " ").count
+                if wordCount >= 200 {
+                    items[result.index].contentHTML = html
+                    NSLog("[EnrichVerge] %@ words: %d subscriber: false", items[result.index].url.absoluteString, wordCount)
+                } else {
+                    items[result.index].isSubscriberOnly = true
+                    NSLog("[EnrichVerge] %@ words: %d subscriber: true (too short)", items[result.index].url.absoluteString, wordCount)
+                }
+            } else {
+                items[result.index].isSubscriberOnly = true
+                NSLog("[EnrichVerge] %@ words: 0 subscriber: true (extraction failed)", items[result.index].url.absoluteString)
+            }
         }
     }
 

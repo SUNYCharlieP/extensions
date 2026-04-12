@@ -24,6 +24,8 @@ struct FeedItem: Identifiable, Equatable {
     var preferenceScore: Double = 0
     var isVideo: Bool = false
     var isShort: Bool = false
+    /// Thin Verge articles where extraction failed — hidden from feed.
+    var isSubscriberOnly: Bool = false
     /// Other sources covering the same story (populated by dedup grouping).
     var relatedArticles: [FeedItem] = []
 

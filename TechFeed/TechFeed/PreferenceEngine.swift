@@ -8,6 +8,7 @@ class PreferenceEngine: ObservableObject {
     private let keywordKey = "pref_keyword_counts"
     private let totalTapsKey = "pref_total_taps"
     private let likedKey = "pref_liked_urls"
+    private let dislikedKey = "pref_disliked_urls"
 
     /// Protects all cached* properties — scoreItems runs on a background thread
     /// while recordTap/recordLike mutate from the main thread.
@@ -16,9 +17,10 @@ class PreferenceEngine: ObservableObject {
     private var cachedSources: [String: Int]
     private var cachedKeywords: [String: Int]
     private var cachedTotalTaps: Int
-    /// Published so SwiftUI views observing this engine update when likes change.
+    /// Published so SwiftUI views observing this engine update when likes/dislikes change.
     @Published private(set) var likedVersion: Int = 0
     private var cachedLikedURLs: Set<String>
+    private var cachedDislikedURLs: Set<String>
 
     private let stopWords: Set<String> = [
         "the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
@@ -44,6 +46,7 @@ class PreferenceEngine: ObservableObject {
         cachedKeywords = defaults.dictionary(forKey: keywordKey) as? [String: Int] ?? [:]
         cachedTotalTaps = defaults.integer(forKey: totalTapsKey)
         cachedLikedURLs = Set(defaults.stringArray(forKey: likedKey) ?? [])
+        cachedDislikedURLs = Set(defaults.stringArray(forKey: dislikedKey) ?? [])
     }
 
     func recordTap(on item: FeedItem) {
@@ -58,6 +61,8 @@ class PreferenceEngine: ObservableObject {
     }
 
     func recordLike(on item: FeedItem) {
+        // Mutual exclusion — undo a dislike first if present
+        if isDisliked(item) { removeDislike(on: item) }
         lock.lock()
         let url = item.url.absoluteString
         guard !cachedLikedURLs.contains(url) else { lock.unlock(); return }
@@ -96,6 +101,46 @@ class PreferenceEngine: ObservableObject {
         return result
     }
 
+    func recordDislike(on item: FeedItem) {
+        // Mutual exclusion — undo a like first if present
+        if isLiked(item) { removeLike(on: item) }
+        lock.lock()
+        let url = item.url.absoluteString
+        guard !cachedDislikedURLs.contains(url) else { lock.unlock(); return }
+        cachedDislikedURLs.insert(url)
+        // -2x weight — negative signal that actively suppresses source/keywords
+        cachedSources[item.source, default: 0] -= 2
+        for keyword in extractKeywords(from: item.title) {
+            cachedKeywords[keyword, default: 0] -= 2
+        }
+        cachedTotalTaps = max(0, cachedTotalTaps - 2)
+        lock.unlock()
+        likedVersion += 1
+        persistAsync()
+    }
+
+    func removeDislike(on item: FeedItem) {
+        lock.lock()
+        let url = item.url.absoluteString
+        guard cachedDislikedURLs.contains(url) else { lock.unlock(); return }
+        cachedDislikedURLs.remove(url)
+        cachedSources[item.source, default: 0] += 2
+        for keyword in extractKeywords(from: item.title) {
+            cachedKeywords[keyword, default: 0] += 2
+        }
+        cachedTotalTaps += 2
+        lock.unlock()
+        likedVersion += 1
+        persistAsync()
+    }
+
+    func isDisliked(_ item: FeedItem) -> Bool {
+        lock.lock()
+        let result = cachedDislikedURLs.contains(item.url.absoluteString)
+        lock.unlock()
+        return result
+    }
+
     /// Returns 0–1 affinity for a source based on tap history. Used for dedup tie-breaking.
     func sourceAffinity(_ source: String) -> Double {
         lock.lock()
@@ -114,6 +159,7 @@ class PreferenceEngine: ObservableObject {
         let keywords = cachedKeywords
         let taps = cachedTotalTaps
         let liked = Array(cachedLikedURLs)
+        let disliked = Array(cachedDislikedURLs)
         lock.unlock()
         persistQueue.async { [weak self] in
             guard let self = self else { return }
@@ -121,6 +167,7 @@ class PreferenceEngine: ObservableObject {
             self.defaults.set(keywords, forKey: self.keywordKey)
             self.defaults.set(taps, forKey: self.totalTapsKey)
             self.defaults.set(liked, forKey: self.likedKey)
+            self.defaults.set(disliked, forKey: self.dislikedKey)
         }
     }
 
